@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openenv-ad-fraud-env"
+version = "0.1.0"
+description = "Ad Fraud Investigation Environment for OpenEnv — real-world ad fraud detection and investigation simulation"
+requires-python = ">=3.11"
+dependencies = [
+    "openenv-core[core]>=0.2.2",
+    "fastapi>=0.115.0",
+    "pydantic>=2.0.0",
+    "uvicorn[standard]>=0.24.0",
+    "requests>=2.31.0",
+    "faker==33.1.0",
+    "networkx>=3.2",
+    "openai>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[project.scripts]
+server = "ad_fraud_env.server.app:main"
+
+[tool.setuptools]
+packages = [
+    "ad_fraud_env",
+    "ad_fraud_env.server",
+    "ad_fraud_env.data",
+    "ad_fraud_env.graders",
+]
+
+[tool.setuptools.package-dir]
+"ad_fraud_env" = "."
+"ad_fraud_env.server" = "server"
+"ad_fraud_env.data" = "data"
+"ad_fraud_env.graders" = "graders"

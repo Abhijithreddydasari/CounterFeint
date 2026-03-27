@@ -1,0 +1,30 @@
+{
+  "baseline_model": "gpt-4o-mini",
+  "seed": 42,
+  "tasks": {
+    "task_1": {
+      "task_id": "task_1",
+      "score": 0.0,
+      "steps": 0,
+      "verdicts": 0,
+      "total_ads": 5,
+      "note": "Placeholder — run inference.py with OPENAI_API_KEY to generate real scores"
+    },
+    "task_2": {
+      "task_id": "task_2",
+      "score": 0.0,
+      "steps": 0,
+      "verdicts": 0,
+      "total_ads": 12,
+      "note": "Placeholder — run inference.py with OPENAI_API_KEY to generate real scores"
+    },
+    "task_3": {
+      "task_id": "task_3",
+      "score": 0.0,
+      "steps": 0,
+      "verdicts": 0,
+      "total_ads": 20,
+      "note": "Placeholder — run inference.py with OPENAI_API_KEY to generate real scores"
+    }
+  }
+}

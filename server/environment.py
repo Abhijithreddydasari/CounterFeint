@@ -1,0 +1,544 @@
+"""
+Core Ad Fraud Investigation Environment.
+
+Implements the OpenEnv Environment interface. The agent reviews a queue of ads,
+investigates them, and renders verdicts under a budget constraint.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Dict, List, Optional, Set
+from uuid import uuid4
+
+from openenv.core.env_server.interfaces import Environment
+from openenv.core.env_server.types import State
+
+from ..data.ad_generator import (
+    TASK_CONFIGS,
+    Ad,
+    GeneratedEpisode,
+    generate_episode,
+)
+from ..models import AdFraudState, AdReviewAction, AdReviewObservation
+
+logger = logging.getLogger(__name__)
+
+# Module-level store so the /grader endpoint can read the last score.
+_last_grader_result: Dict[str, Any] = {}
+
+
+def get_last_grader_result() -> Dict[str, Any]:
+    return dict(_last_grader_result)
+
+
+class AdFraudEnvironment(
+    Environment[AdReviewAction, AdReviewObservation, AdFraudState]
+):
+    """
+    Ad fraud investigation environment.
+
+    Each episode is a review session: the agent processes a queue of N ads
+    within a limited action budget, choosing what to investigate and when
+    to render verdicts. Unreviewed ads auto-approve at episode end.
+    """
+
+    SUPPORTS_CONCURRENT_SESSIONS = True
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._state = AdFraudState(episode_id=str(uuid4()), step_count=0)
+        self._episode: Optional[GeneratedEpisode] = None
+        self._verdicts: Dict[str, Dict[str, Any]] = {}
+        self._links: List[Dict[str, Any]] = []
+        self._investigations: Dict[str, List[str]] = {}
+        self._cumulative_reward: float = 0.0
+        self._done = False
+        self._last_feedback = ""
+        self._focused_ad_id: Optional[str] = None
+
+    # ------------------------------------------------------------------
+    # OpenEnv interface
+    # ------------------------------------------------------------------
+
+    def reset(
+        self,
+        seed: int | None = None,
+        episode_id: str | None = None,
+        **kwargs: Any,
+    ) -> AdReviewObservation:
+        task_id = kwargs.get("task_id", "task_1")
+        if task_id not in TASK_CONFIGS:
+            task_id = "task_1"
+
+        effective_seed = seed if seed is not None else hash(uuid4()) & 0xFFFFFFFF
+        self._episode = generate_episode(effective_seed, task_id)
+
+        config = self._episode.task_config
+        self._state = AdFraudState(
+            episode_id=episode_id or str(uuid4()),
+            step_count=0,
+            task_id=task_id,
+            total_ads=config.queue_size,
+            reviewed_count=0,
+            remaining_budget=config.action_budget,
+            verdicts={},
+            grader_score=None,
+        )
+        self._verdicts = {}
+        self._links = []
+        self._investigations = {}
+        self._cumulative_reward = 0.0
+        self._done = False
+        self._last_feedback = "Episode started. Review the ad queue and begin your investigation."
+        self._focused_ad_id = self._episode.ads[0].ad_id if self._episode.ads else None
+
+        return self._build_observation(reward=0.0, done=False)
+
+    def step(
+        self,
+        action: AdReviewAction,
+        timeout_s: float | None = None,
+        **kwargs: Any,
+    ) -> AdReviewObservation:
+        if self._done:
+            return self._build_observation(
+                reward=0.0, done=True,
+                feedback_override="Episode is already complete. Call reset() to start a new episode.",
+            )
+
+        if self._episode is None:
+            return self._build_observation(
+                reward=0.0, done=False,
+                feedback_override="Environment not initialized. Call reset() first.",
+            )
+
+        self._state.step_count += 1
+
+        ad_ids = {a.ad_id for a in self._episode.ads}
+        if action.ad_id not in ad_ids:
+            self._last_feedback = f"Invalid ad_id '{action.ad_id}'. Valid IDs: {', '.join(sorted(ad_ids))}"
+            return self._build_observation(reward=-0.05, done=False)
+
+        if action.action_type == "investigate":
+            reward = self._handle_investigate(action)
+        elif action.action_type == "verdict":
+            reward = self._handle_verdict(action)
+        elif action.action_type == "link_accounts":
+            reward = self._handle_link(action)
+        else:
+            self._last_feedback = f"Unknown action_type '{action.action_type}'."
+            reward = -0.05
+
+        self._cumulative_reward += reward
+
+        done = self._check_done()
+        if done and not self._done:
+            end_reward = self._handle_episode_end()
+            reward += end_reward
+            self._cumulative_reward += end_reward
+            self._done = True
+
+        self._state.remaining_budget = max(0, self._state.remaining_budget)
+        self._state.reviewed_count = len(self._verdicts)
+        self._state.verdicts = {
+            ad_id: v.get("verdict", "") for ad_id, v in self._verdicts.items()
+        }
+
+        return self._build_observation(reward=reward, done=self._done)
+
+    @property
+    def state(self) -> AdFraudState:
+        return self._state
+
+    # ------------------------------------------------------------------
+    # Action handlers
+    # ------------------------------------------------------------------
+
+    def _handle_investigate(self, action: AdReviewAction) -> float:
+        if self._state.remaining_budget <= 0:
+            self._last_feedback = "No budget remaining. You must render verdicts on remaining ads or end the episode."
+            return -0.02
+
+        if action.investigation_target is None:
+            self._last_feedback = "investigation_target is required for action_type='investigate'."
+            return -0.05
+
+        ad_id = action.ad_id
+        target = action.investigation_target
+
+        prev = self._investigations.setdefault(ad_id, [])
+        if target in prev:
+            self._last_feedback = (
+                f"You already investigated '{target}' for {ad_id}. "
+                "Choose a different investigation target or render a verdict."
+            )
+            return -0.02
+
+        if ad_id in self._verdicts:
+            self._last_feedback = f"You already rendered a verdict on {ad_id}. Choose a different ad."
+            return -0.02
+
+        self._state.remaining_budget -= 1
+        prev.append(target)
+        self._focused_ad_id = ad_id
+
+        findings = self._episode.investigation_data.get(ad_id, {}).get(
+            target, "No data available for this investigation type."
+        )
+        self._last_feedback = (
+            f"Investigation complete: {target} for {ad_id}.\n"
+            f"--- Findings ---\n{findings}"
+        )
+        return -0.02
+
+    def _handle_verdict(self, action: AdReviewAction) -> float:
+        ad_id = action.ad_id
+
+        if ad_id in self._verdicts:
+            self._last_feedback = f"You already rendered a verdict on {ad_id}."
+            return -0.02
+
+        if action.verdict is None:
+            self._last_feedback = "verdict field is required for action_type='verdict'."
+            return -0.05
+
+        confidence = action.confidence if action.confidence is not None else 0.5
+        ad = self._get_ad(ad_id)
+        ground_truth = ad.ground_truth_label if ad else "legit"
+        severity = ad.severity if ad else 0.0
+
+        self._verdicts[ad_id] = {
+            "verdict": action.verdict,
+            "confidence": confidence,
+            "ground_truth": ground_truth,
+        }
+
+        reward = self._compute_verdict_reward(action.verdict, ground_truth, severity, confidence)
+
+        verdict_correct = (
+            (action.verdict == "reject" and ground_truth == "fraud")
+            or (action.verdict == "approve" and ground_truth == "legit")
+            or (action.verdict == "escalate" and ground_truth == "escalate")
+        )
+
+        self._last_feedback = (
+            f"Verdict recorded for {ad_id}: {action.verdict} "
+            f"(confidence: {confidence:.2f}). "
+            f"{'Correct decision.' if verdict_correct else 'Incorrect decision.'} "
+            f"Reward: {reward:+.2f}"
+        )
+
+        pending = [a.ad_id for a in self._episode.ads if a.ad_id not in self._verdicts]
+        if pending:
+            self._focused_ad_id = pending[0]
+
+        return reward
+
+    def _handle_link(self, action: AdReviewAction) -> float:
+        if action.linked_ad_id is None:
+            self._last_feedback = "linked_ad_id is required for action_type='link_accounts'."
+            return -0.05
+
+        ad_ids = {a.ad_id for a in self._episode.ads}
+        if action.linked_ad_id not in ad_ids:
+            self._last_feedback = f"Invalid linked_ad_id '{action.linked_ad_id}'."
+            return -0.05
+
+        if action.ad_id == action.linked_ad_id:
+            self._last_feedback = "Cannot link an ad to itself."
+            return -0.05
+
+        link_key = tuple(sorted([action.ad_id, action.linked_ad_id]))
+        existing = {tuple(sorted([l["ad_id_1"], l["ad_id_2"]])) for l in self._links}
+        if link_key in existing:
+            self._last_feedback = f"Link between {action.ad_id} and {action.linked_ad_id} already recorded."
+            return -0.02
+
+        is_correct = self._check_link_correct(action.ad_id, action.linked_ad_id)
+
+        self._links.append({
+            "ad_id_1": action.ad_id,
+            "ad_id_2": action.linked_ad_id,
+            "reason": action.link_reason or "",
+            "correct": is_correct,
+        })
+
+        if is_correct:
+            self._last_feedback = (
+                f"Network link recorded: {action.ad_id} <-> {action.linked_ad_id}. "
+                "Correct — these ads are part of the same fraud network. Reward: +0.40"
+            )
+            return 0.4
+        else:
+            self._last_feedback = (
+                f"Network link recorded: {action.ad_id} <-> {action.linked_ad_id}. "
+                "Incorrect — these ads are not in the same fraud network. Reward: -0.20"
+            )
+            return -0.2
+
+    # ------------------------------------------------------------------
+    # Reward computation
+    # ------------------------------------------------------------------
+
+    def _compute_verdict_reward(
+        self, verdict: str, ground_truth: str, severity: float, confidence: float
+    ) -> float:
+        if verdict == "reject" and ground_truth == "fraud":
+            return 0.3 + 0.1 * severity
+        elif verdict == "approve" and ground_truth == "legit":
+            return 0.1
+        elif verdict == "escalate" and ground_truth == "escalate":
+            return 0.15
+        elif verdict == "reject" and ground_truth == "legit":
+            return -0.4
+        elif verdict == "approve" and ground_truth == "fraud":
+            return -0.5
+        elif verdict == "escalate":
+            return -0.05
+        elif verdict == "approve" and ground_truth == "escalate":
+            return -0.15
+        elif verdict == "reject" and ground_truth == "escalate":
+            return -0.1
+        else:
+            return -0.05
+
+    def _handle_episode_end(self) -> float:
+        """Apply end-of-episode adjustments for unreviewed ads and bonuses."""
+        reward = 0.0
+
+        unreviewed_fraud = 0
+        for ad in self._episode.ads:
+            if ad.ad_id not in self._verdicts:
+                self._verdicts[ad.ad_id] = {
+                    "verdict": "approve",
+                    "confidence": 0.0,
+                    "ground_truth": ad.ground_truth_label,
+                    "auto_approved": True,
+                }
+                if ad.ground_truth_label == "fraud":
+                    unreviewed_fraud += 1
+                    reward -= 0.3
+
+        total_correct = sum(
+            1 for v in self._verdicts.values()
+            if not v.get("auto_approved")
+            and (
+                (v["verdict"] == "reject" and v["ground_truth"] == "fraud")
+                or (v["verdict"] == "approve" and v["ground_truth"] == "legit")
+                or (v["verdict"] == "escalate" and v["ground_truth"] == "escalate")
+            )
+        )
+        total_actions = self._state.step_count
+        if total_actions > 0:
+            efficiency = (total_correct / total_actions) * 0.2
+            reward += efficiency
+
+        if self._episode.fraud_rings:
+            reward += self._compute_network_bonus()
+
+        grader_score = self._compute_grader_score()
+        self._state.grader_score = grader_score
+
+        global _last_grader_result
+        _last_grader_result = {
+            "task_id": self._state.task_id,
+            "grader_score": grader_score,
+            "episode_id": self._state.episode_id,
+            "total_steps": self._state.step_count,
+            "verdicts_rendered": len([
+                v for v in self._verdicts.values() if not v.get("auto_approved")
+            ]),
+            "auto_approved": len([
+                v for v in self._verdicts.values() if v.get("auto_approved")
+            ]),
+            "unreviewed_fraud": unreviewed_fraud,
+        }
+
+        self._last_feedback = (
+            f"Episode complete. Grader score: {grader_score:.3f}/1.000\n"
+            f"Verdicts rendered: {len(self._verdicts) - unreviewed_fraud}/{len(self._episode.ads)}\n"
+            f"Auto-approved (unreviewed): {unreviewed_fraud} fraud ad(s) missed\n"
+            f"Correct decisions: {total_correct}/{len(self._verdicts)}"
+        )
+
+        return reward
+
+    def _compute_network_bonus(self) -> float:
+        """Bonus for correctly identifying fraud network members."""
+        if not self._episode.fraud_rings:
+            return 0.0
+
+        bonus = 0.0
+        for ring in self._episode.fraud_rings:
+            members = set(ring.member_ad_ids)
+            identified_pairs = set()
+            for link in self._links:
+                if link["correct"]:
+                    pair = frozenset([link["ad_id_1"], link["ad_id_2"]])
+                    if pair.issubset(members):
+                        identified_pairs.add(pair)
+
+            n_possible_pairs = len(members) * (len(members) - 1) // 2
+            if n_possible_pairs > 0:
+                coverage = len(identified_pairs) / n_possible_pairs
+                if coverage >= 0.8:
+                    bonus += 0.3
+                else:
+                    bonus += 0.3 * coverage
+
+        return bonus
+
+    def _compute_grader_score(self) -> float:
+        """Normalize cumulative reward to 0.0-1.0 for OpenEnv compliance."""
+        config = self._episode.task_config
+
+        best_case = 0.0
+        for ad in self._episode.ads:
+            if ad.ground_truth_label == "fraud":
+                best_case += 0.3 + 0.1 * ad.severity
+            elif ad.ground_truth_label == "legit":
+                best_case += 0.1
+            elif ad.ground_truth_label == "escalate":
+                best_case += 0.15
+        best_case += 0.2
+
+        if config.include_networks and self._episode.fraud_rings:
+            best_case += 0.3 * len(self._episode.fraud_rings)
+
+        worst_case = 0.0
+        for ad in self._episode.ads:
+            if ad.ground_truth_label == "fraud":
+                worst_case -= 0.5
+            elif ad.ground_truth_label == "legit":
+                worst_case -= 0.4
+            elif ad.ground_truth_label == "escalate":
+                worst_case -= 0.15
+        worst_case -= config.action_budget * 0.02
+
+        raw = self._cumulative_reward
+        score_range = best_case - worst_case
+        if score_range <= 0:
+            return 0.5
+
+        normalized = (raw - worst_case) / score_range
+        return max(0.0, min(1.0, normalized))
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _check_done(self) -> bool:
+        if self._episode is None:
+            return True
+        all_reviewed = all(
+            ad.ad_id in self._verdicts for ad in self._episode.ads
+        )
+        no_budget = self._state.remaining_budget <= 0
+        only_verdicts_possible = no_budget and not all_reviewed
+        return all_reviewed or only_verdicts_possible
+
+    def _check_link_correct(self, ad_id_1: str, ad_id_2: str) -> bool:
+        """Check if two ads share a fraud ring."""
+        for ring in self._episode.fraud_rings:
+            if ad_id_1 in ring.member_ad_ids and ad_id_2 in ring.member_ad_ids:
+                return True
+        return False
+
+    def _get_ad(self, ad_id: str) -> Optional[Ad]:
+        if self._episode is None:
+            return None
+        for ad in self._episode.ads:
+            if ad.ad_id == ad_id:
+                return ad
+        return None
+
+    def _build_observation(
+        self,
+        reward: float,
+        done: bool,
+        feedback_override: str | None = None,
+    ) -> AdReviewObservation:
+        feedback = feedback_override or self._last_feedback
+
+        if self._episode is None:
+            return AdReviewObservation(
+                done=done,
+                reward=reward,
+                queue_summary="No episode loaded.",
+                current_ad_info="",
+                investigation_findings="",
+                verdict_history_summary="",
+                feedback=feedback,
+                available_ads=[],
+                queue_status={},
+            )
+
+        config = self._episode.task_config
+        pending = [a for a in self._episode.ads if a.ad_id not in self._verdicts]
+        reviewed = [a for a in self._episode.ads if a.ad_id in self._verdicts]
+
+        queue_summary = (
+            f"Task: {config.name} ({config.difficulty})\n"
+            f"Total ads: {config.queue_size} | "
+            f"Reviewed: {len(reviewed)} | "
+            f"Pending: {len(pending)} | "
+            f"Budget remaining: {self._state.remaining_budget} actions | "
+            f"Step: {self._state.step_count}"
+        )
+
+        current_ad_info = ""
+        if self._focused_ad_id and not done:
+            ad = self._get_ad(self._focused_ad_id)
+            if ad and ad.ad_id not in self._verdicts:
+                signals = ", ".join(ad.initial_risk_signals) if ad.initial_risk_signals else "None"
+                investigated = self._investigations.get(ad.ad_id, [])
+                inv_status = ", ".join(investigated) if investigated else "None yet"
+                current_ad_info = (
+                    f"=== Ad in Focus: {ad.ad_id} ===\n"
+                    f"Category: {ad.category}\n"
+                    f"Ad copy: \"{ad.ad_copy}\"\n"
+                    f"Targeting: {ad.targeting_summary}\n"
+                    f"Initial risk signals: {signals}\n"
+                    f"Investigations completed: {inv_status}\n"
+                    f"Available investigation targets: advertiser_history, landing_page, "
+                    f"payment_method, targeting_overlap, creative_similarity"
+                )
+
+        investigation_findings = ""
+        for ad_id, targets in self._investigations.items():
+            for target in targets:
+                finding = self._episode.investigation_data.get(ad_id, {}).get(target, "")
+                if finding:
+                    investigation_findings += f"\n[{ad_id} / {target}]\n{finding}\n"
+
+        verdict_lines = []
+        for ad_id, v in self._verdicts.items():
+            if not v.get("auto_approved"):
+                verdict_lines.append(
+                    f"  {ad_id}: {v['verdict']} (confidence: {v['confidence']:.2f})"
+                )
+        verdict_history_summary = "\n".join(verdict_lines) if verdict_lines else "No verdicts yet."
+
+        available_ads = [a.ad_id for a in pending]
+
+        queue_status = {
+            "total_ads": config.queue_size,
+            "reviewed": len(reviewed),
+            "pending": len(pending),
+            "remaining_budget": self._state.remaining_budget,
+            "step": self._state.step_count,
+            "task_id": config.task_id,
+        }
+
+        return AdReviewObservation(
+            done=done,
+            reward=reward,
+            queue_summary=queue_summary,
+            current_ad_info=current_ad_info,
+            investigation_findings=investigation_findings.strip(),
+            verdict_history_summary=verdict_history_summary,
+            feedback=feedback,
+            available_ads=available_ads,
+            queue_status=queue_status,
+        )
