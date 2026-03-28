@@ -1,16 +1,14 @@
 """
-Baseline inference script for the Ad Fraud Investigation Environment.
+Inference Script — Ad Fraud Investigation Environment
+===================================
+MANDATORY
+- Before submitting, ensure the following variables are defined in your environment configuration:
+    API_BASE_URL   The API endpoint for the LLM.
+    MODEL_NAME     The model identifier to use for inference.
+    HF_TOKEN       Your Hugging Face / API key.
 
-Uses the OpenAI-compatible API client to run an LLM agent against all
-3 tasks, producing reproducible baseline scores.
-
-Required environment variables:
-    API_BASE_URL   The API endpoint for the LLM
-    MODEL_NAME     The model identifier to use for inference
-    HF_TOKEN       Your Hugging Face / API key
-
-Usage:
-    API_BASE_URL=https://... MODEL_NAME=meta-llama/... HF_TOKEN=hf_... python inference.py
+- The inference script must be named `inference.py` and placed in the root directory of the project
+- Participants must use OpenAI Client for all LLM calls using above variables
 """
 
 from __future__ import annotations
@@ -18,9 +16,29 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
+
+from openai import OpenAI
+
+try:
+    from .client import AdFraudEnv
+    from .models import AdReviewAction
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from ad_fraud_env.client import AdFraudEnv
+    from ad_fraud_env.models import AdReviewAction
+
+
+API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+MODEL_NAME = os.getenv("MODEL_NAME")
+MAX_STEPS = 100
+TEMPERATURE = 0.1
+MAX_TOKENS = 256
+FALLBACK_VERDICT = "escalate"
 
 logger = logging.getLogger(__name__)
 
@@ -57,26 +75,34 @@ Strategy:
 Output ONLY the JSON action, no other text.
 """
 
+JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
+
 
 def _extract_json(text: str) -> Dict[str, Any]:
     """Extract JSON from LLM response, handling markdown code blocks."""
     text = text.strip()
-    if text.startswith("```"):
+    m = JSON_BLOCK_RE.search(text)
+    if m:
+        text = m.group(1).strip()
+    elif text.startswith("```"):
         lines = text.split("\n")
         lines = [l for l in lines if not l.strip().startswith("```")]
         text = "\n".join(lines).strip()
-
     return json.loads(text)
 
 
-def _create_openai_client():
-    """Create an OpenAI-compatible client using the required env vars."""
-    from openai import OpenAI
-
-    api_base_url = os.environ["API_BASE_URL"]
-    hf_token = os.environ["HF_TOKEN"]
-
-    return OpenAI(api_key=hf_token, base_url=api_base_url)
+def build_obs_prompt(obs: Any) -> str:
+    """Format an observation into a user prompt for the LLM."""
+    parts = [
+        f"Queue: {obs.queue_summary}",
+        f"Current Ad: {obs.current_ad_info}",
+        f"Feedback: {obs.feedback}",
+        f"Available ads: {', '.join(obs.available_ads)}",
+        f"Verdicts so far: {obs.verdict_history_summary}",
+    ]
+    if obs.investigation_findings:
+        parts.append(f"Investigation findings:\n{obs.investigation_findings}")
+    return "\n\n".join(parts)
 
 
 def run_single_task(
@@ -85,58 +111,53 @@ def run_single_task(
     env_base_url: str = "http://localhost:8000",
 ) -> Dict[str, Any]:
     """Run the baseline agent on a single task and return the score."""
-    from .client import AdFraudEnv
-    from .models import AdReviewAction
+    base_url = os.getenv("API_BASE_URL") or API_BASE_URL
+    api_key = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or API_KEY
+    model = os.getenv("MODEL_NAME") or MODEL_NAME
 
-    model_name = os.environ["MODEL_NAME"]
-    client = _create_openai_client()
+    client = OpenAI(base_url=base_url, api_key=api_key)
     env = AdFraudEnv(base_url=env_base_url).sync()
 
     try:
         env.connect()
         result = env.reset(seed=seed, task_id=task_id)
 
-        messages = [
+        messages: List[Dict[str, str]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
         ]
 
         step_count = 0
-        max_steps = 100
 
-        while not result.done and step_count < max_steps:
+        while not result.done and step_count < MAX_STEPS:
             obs = result.observation
-            obs_text = (
-                f"Queue: {obs.queue_summary}\n\n"
-                f"Current Ad: {obs.current_ad_info}\n\n"
-                f"Feedback: {obs.feedback}\n\n"
-                f"Available ads: {', '.join(obs.available_ads)}\n\n"
-                f"Verdicts so far: {obs.verdict_history_summary}"
-            )
-            if obs.investigation_findings:
-                obs_text += f"\n\nInvestigation findings:\n{obs.investigation_findings}"
-
-            messages.append({"role": "user", "content": obs_text})
-
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                temperature=0.1,
-                max_tokens=256,
-            )
-
-            assistant_msg = response.choices[0].message.content or "{}"
-            messages.append({"role": "assistant", "content": assistant_msg})
+            user_prompt = build_obs_prompt(obs)
+            messages.append({"role": "user", "content": user_prompt})
 
             try:
-                action_data = _extract_json(assistant_msg)
+                completion = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=TEMPERATURE,
+                    max_tokens=MAX_TOKENS,
+                    stream=False,
+                )
+                response_text = completion.choices[0].message.content or "{}"
+            except Exception as exc:
+                logger.warning("Model request failed on step %d: %s", step_count, exc)
+                response_text = "{}"
+
+            messages.append({"role": "assistant", "content": response_text})
+
+            try:
+                action_data = _extract_json(response_text)
                 action = AdReviewAction(**action_data)
             except Exception as e:
-                logger.warning("Failed to parse action from LLM on step %d: %s", step_count, e)
+                logger.warning("Failed to parse action on step %d: %s", step_count, e)
                 if obs.available_ads:
                     action = AdReviewAction(
                         action_type="verdict",
                         ad_id=obs.available_ads[0],
-                        verdict="escalate",
+                        verdict=FALLBACK_VERDICT,
                         confidence=0.3,
                     )
                 else:
@@ -165,8 +186,8 @@ def run_baseline(
     env_base_url: str = "http://localhost:8000",
 ) -> Dict[str, Any]:
     """Run baseline inference on all 3 tasks."""
-    model_name = os.environ.get("MODEL_NAME", "unknown")
-    results = {}
+    model = os.getenv("MODEL_NAME") or MODEL_NAME or "unknown"
+    results: Dict[str, Any] = {}
     for task_id in ["task_1", "task_2", "task_3"]:
         logger.info("Running baseline for %s...", task_id)
         try:
@@ -179,27 +200,22 @@ def run_baseline(
             logger.error("  %s failed: %s", task_id, e)
             results[task_id] = {"task_id": task_id, "score": 0.0, "error": str(e)}
 
-    return {"baseline_model": model_name, "seed": 42, "tasks": results}
+    return {"baseline_model": model, "seed": 42, "tasks": results}
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-    missing = []
-    for var in ("API_BASE_URL", "MODEL_NAME", "HF_TOKEN"):
-        if not os.getenv(var):
-            missing.append(var)
-    if missing:
-        print(
-            f"Error: required environment variables not set: {', '.join(missing)}",
-            file=sys.stderr,
-        )
+    if not API_KEY:
+        print("Error: HF_TOKEN (or API_KEY) environment variable is required.", file=sys.stderr)
+        sys.exit(1)
+    if not MODEL_NAME:
+        print("Error: MODEL_NAME environment variable is required.", file=sys.stderr)
         sys.exit(1)
 
     env_base_url = os.getenv("AD_FRAUD_ENV_URL", "http://localhost:8000")
-    model_name = os.environ["MODEL_NAME"]
 
-    print(f"Running baseline inference against {env_base_url} with model {model_name}...")
+    print(f"Running baseline inference against {env_base_url} with model {MODEL_NAME}...")
     scores = run_baseline(env_base_url=env_base_url)
 
     output_path = Path(__file__).resolve().parent / "baseline_scores.json"
