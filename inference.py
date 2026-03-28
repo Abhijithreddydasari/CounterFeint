@@ -1,12 +1,16 @@
 """
 Baseline inference script for the Ad Fraud Investigation Environment.
 
-Uses the OpenAI API to run an LLM agent against all 3 tasks,
-producing reproducible baseline scores.
+Uses the OpenAI-compatible API client to run an LLM agent against all
+3 tasks, producing reproducible baseline scores.
+
+Required environment variables:
+    API_BASE_URL   The API endpoint for the LLM
+    MODEL_NAME     The model identifier to use for inference
+    HF_TOKEN       Your Hugging Face / API key
 
 Usage:
-    OPENAI_API_KEY=sk-... python -m ad_fraud_env.inference
-    OPENAI_API_KEY=sk-... python inference.py
+    API_BASE_URL=https://... MODEL_NAME=meta-llama/... HF_TOKEN=hf_... python inference.py
 """
 
 from __future__ import annotations
@@ -65,21 +69,28 @@ def _extract_json(text: str) -> Dict[str, Any]:
     return json.loads(text)
 
 
-def run_single_task(
-    api_key: str,
-    task_id: str,
-    seed: int = 42,
-    base_url: str = "http://localhost:8000",
-    model: str = "gpt-4o-mini",
-) -> Dict[str, Any]:
-    """Run the baseline agent on a single task and return the score."""
+def _create_openai_client():
+    """Create an OpenAI-compatible client using the required env vars."""
     from openai import OpenAI
 
+    api_base_url = os.environ["API_BASE_URL"]
+    hf_token = os.environ["HF_TOKEN"]
+
+    return OpenAI(api_key=hf_token, base_url=api_base_url)
+
+
+def run_single_task(
+    task_id: str,
+    seed: int = 42,
+    env_base_url: str = "http://localhost:8000",
+) -> Dict[str, Any]:
+    """Run the baseline agent on a single task and return the score."""
     from .client import AdFraudEnv
     from .models import AdReviewAction
 
-    client = OpenAI(api_key=api_key)
-    env = AdFraudEnv(base_url=base_url).sync()
+    model_name = os.environ["MODEL_NAME"]
+    client = _create_openai_client()
+    env = AdFraudEnv(base_url=env_base_url).sync()
 
     try:
         env.connect()
@@ -107,7 +118,7 @@ def run_single_task(
             messages.append({"role": "user", "content": obs_text})
 
             response = client.chat.completions.create(
-                model=model,
+                model=model_name,
                 messages=messages,
                 temperature=0.1,
                 max_tokens=256,
@@ -151,17 +162,16 @@ def run_single_task(
 
 
 def run_baseline(
-    api_key: str,
-    base_url: str = "http://localhost:8000",
-    model: str = "gpt-4o-mini",
+    env_base_url: str = "http://localhost:8000",
 ) -> Dict[str, Any]:
     """Run baseline inference on all 3 tasks."""
+    model_name = os.environ.get("MODEL_NAME", "unknown")
     results = {}
     for task_id in ["task_1", "task_2", "task_3"]:
         logger.info("Running baseline for %s...", task_id)
         try:
             task_result = run_single_task(
-                api_key, task_id, seed=42, base_url=base_url, model=model
+                task_id, seed=42, env_base_url=env_base_url,
             )
             results[task_id] = task_result
             logger.info("  %s score: %.3f", task_id, task_result["score"])
@@ -169,22 +179,28 @@ def run_baseline(
             logger.error("  %s failed: %s", task_id, e)
             results[task_id] = {"task_id": task_id, "score": 0.0, "error": str(e)}
 
-    return {"baseline_model": model, "seed": 42, "tasks": results}
+    return {"baseline_model": model_name, "seed": 42, "tasks": results}
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        print("Error: OPENAI_API_KEY environment variable is required.", file=sys.stderr)
+    missing = []
+    for var in ("API_BASE_URL", "MODEL_NAME", "HF_TOKEN"):
+        if not os.getenv(var):
+            missing.append(var)
+    if missing:
+        print(
+            f"Error: required environment variables not set: {', '.join(missing)}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    base_url = os.getenv("AD_FRAUD_ENV_URL", "http://localhost:8000")
-    model = os.getenv("BASELINE_MODEL", "gpt-4o-mini")
+    env_base_url = os.getenv("AD_FRAUD_ENV_URL", "http://localhost:8000")
+    model_name = os.environ["MODEL_NAME"]
 
-    print(f"Running baseline inference against {base_url} with model {model}...")
-    scores = run_baseline(api_key, base_url=base_url, model=model)
+    print(f"Running baseline inference against {env_base_url} with model {model_name}...")
+    scores = run_baseline(env_base_url=env_base_url)
 
     output_path = Path(__file__).resolve().parent / "baseline_scores.json"
     with open(output_path, "w") as f:

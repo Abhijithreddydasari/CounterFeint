@@ -124,9 +124,23 @@ docker run -p 8000:8000 ad-fraud-env
 ```
 
 ### Run baseline
+
+The inference script requires three environment variables:
+
+| Variable | Description |
+|---|---|
+| `API_BASE_URL` | The API endpoint for the LLM |
+| `MODEL_NAME` | The model identifier to use |
+| `HF_TOKEN` | Your Hugging Face / API key |
+
 ```bash
-OPENAI_API_KEY=sk-... python -m ad_fraud_env.inference
+API_BASE_URL=https://api-inference.huggingface.co/v1 \
+MODEL_NAME=meta-llama/Llama-3.1-8B-Instruct \
+HF_TOKEN=hf_... \
+python inference.py
 ```
+
+**Infra constraints:** The inference script runs within 20 minutes on vcpu=2, memory=8GB.
 
 ## API Endpoints
 
@@ -142,7 +156,7 @@ OPENAI_API_KEY=sk-... python -m ad_fraud_env.inference
 
 ## Baseline Scores
 
-Scores are generated with `gpt-4o-mini` (seed=42). Run `inference.py` with your API key to reproduce.
+Scores are generated with seed=42 using the model specified by `MODEL_NAME`. Set `API_BASE_URL`, `MODEL_NAME`, and `HF_TOKEN`, then run `python inference.py` to reproduce.
 
 | Task | Score | Steps |
 |---|---:|---:|

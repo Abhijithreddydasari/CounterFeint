@@ -57,14 +57,14 @@ async def tasks() -> Dict[str, Any]:
 
 @app.get("/baseline", tags=["Competition"])
 async def baseline() -> Dict[str, Any]:
-    """Return baseline scores, running live inference if API key is available."""
+    """Return baseline scores, running live inference if credentials are available."""
     baseline_path = Path(__file__).resolve().parent.parent / "baseline_scores.json"
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    if api_key:
+    has_creds = all(os.getenv(v) for v in ("API_BASE_URL", "MODEL_NAME", "HF_TOKEN"))
+    if has_creds:
         try:
             from ..inference import run_baseline
-            scores = run_baseline(api_key)
+            scores = run_baseline()
             with open(baseline_path, "w") as f:
                 json.dump(scores, f, indent=2)
             return scores
@@ -76,7 +76,7 @@ async def baseline() -> Dict[str, Any]:
             return json.load(f)
 
     return {
-        "error": "No baseline scores available. Set OPENAI_API_KEY to run live inference.",
+        "error": "No baseline scores available. Set API_BASE_URL, MODEL_NAME, and HF_TOKEN to run live inference.",
         "tasks": {},
     }
 
