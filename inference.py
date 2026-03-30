@@ -30,7 +30,8 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from ad_fraud_env.client import AdFraudEnv
     from ad_fraud_env.models import AdReviewAction
-
+from dotenv import load_dotenv
+load_dotenv()
 
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
