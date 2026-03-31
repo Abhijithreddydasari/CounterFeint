@@ -11,6 +11,7 @@ Requires-Dist: requests>=2.31.0
 Requires-Dist: faker==33.1.0
 Requires-Dist: networkx>=3.2
 Requires-Dist: openai>=1.0.0
+Requires-Dist: python-dotenv>=1.0.0
 Provides-Extra: dev
 Requires-Dist: pytest>=8.0.0; extra == "dev"
 Requires-Dist: pytest-cov>=4.0.0; extra == "dev"

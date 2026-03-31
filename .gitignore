@@ -1,1 +1,12 @@
 .env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+baseline_scores.json
+outputs/
+convo_logging/

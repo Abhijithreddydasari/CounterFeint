@@ -15,7 +15,11 @@ from typing import Any, Dict
 
 from openenv.core.env_server import create_app
 
-from ..models import AdReviewAction, AdReviewObservation
+try:
+    from ..models import AdReviewAction, AdReviewObservation
+except ImportError:
+    from models import AdReviewAction, AdReviewObservation
+
 from .environment import AdFraudEnvironment, get_last_grader_result
 
 logger = logging.getLogger(__name__)
@@ -36,7 +40,10 @@ app = create_app(
 @app.get("/tasks", tags=["Competition"])
 async def tasks() -> Dict[str, Any]:
     """Return the list of tasks and the action schema."""
-    from ..data.ad_generator import TASK_CONFIGS
+    try:
+        from ..data.ad_generator import TASK_CONFIGS
+    except ImportError:
+        from data.ad_generator import TASK_CONFIGS
 
     task_list = []
     for tid, cfg in TASK_CONFIGS.items():
@@ -63,7 +70,10 @@ async def baseline() -> Dict[str, Any]:
     has_creds = all(os.getenv(v) for v in ("API_BASE_URL", "MODEL_NAME", "HF_TOKEN"))
     if has_creds:
         try:
-            from ..inference import run_baseline
+            try:
+                from ..inference import run_baseline
+            except ImportError:
+                from inference import run_baseline
             scores = run_baseline()
             with open(baseline_path, "w") as f:
                 json.dump(scores, f, indent=2)

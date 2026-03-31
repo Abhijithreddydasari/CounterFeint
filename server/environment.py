@@ -14,13 +14,22 @@ from uuid import uuid4
 from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import State
 
-from ..data.ad_generator import (
-    TASK_CONFIGS,
-    Ad,
-    GeneratedEpisode,
-    generate_episode,
-)
-from ..models import AdFraudState, AdReviewAction, AdReviewObservation
+try:
+    from ..data.ad_generator import (
+        TASK_CONFIGS,
+        Ad,
+        GeneratedEpisode,
+        generate_episode,
+    )
+    from ..models import AdFraudState, AdReviewAction, AdReviewObservation
+except ImportError:
+    from data.ad_generator import (
+        TASK_CONFIGS,
+        Ad,
+        GeneratedEpisode,
+        generate_episode,
+    )
+    from models import AdFraudState, AdReviewAction, AdReviewObservation
 
 logger = logging.getLogger(__name__)
 
@@ -435,8 +444,8 @@ class AdFraudEnvironment(
             ad.ad_id in self._verdicts for ad in self._episode.ads
         )
         no_budget = self._state.remaining_budget <= 0
-        only_verdicts_possible = no_budget and not all_reviewed
-        return all_reviewed or only_verdicts_possible
+        steps_exhausted = self._state.step_count >= self._episode.task_config.action_budget
+        return all_reviewed or no_budget or steps_exhausted
 
     def _check_link_correct(self, ad_id_1: str, ad_id_2: str) -> bool:
         """Check if two ads share a fraud ring."""

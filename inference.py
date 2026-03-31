@@ -26,22 +26,30 @@ from openai import OpenAI
 try:
     from .client import AdFraudEnv
     from .models import AdReviewAction
+    from .data.ad_generator import TASK_CONFIGS
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from ad_fraud_env.client import AdFraudEnv
     from ad_fraud_env.models import AdReviewAction
+    from ad_fraud_env.data.ad_generator import TASK_CONFIGS
 from dotenv import load_dotenv
 load_dotenv()
 
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 MODEL_NAME = os.getenv("MODEL_NAME")
-MAX_STEPS = 100
+"""
+Since there is an upper limit for LLMs in Hugging Face, we are currently shifting to Ollama models for inference.
+Here are the details of Hugging Face models:
+API_BASE_URL: https://router.huggingface.co/v1
+MODEL_NAME: meta-llama/Llama-3.1-8B-Instruct
+"""
 TEMPERATURE = 0.1
 MAX_TOKENS = 256
 FALLBACK_VERDICT = "escalate"
 
 logger = logging.getLogger(__name__)
+LOG_DIR = Path(__file__).resolve().parent / "convo_logging"
 
 SYSTEM_PROMPT = """\
 You are an ad fraud investigator reviewing a queue of advertisements.
@@ -92,18 +100,67 @@ def _extract_json(text: str) -> Dict[str, Any]:
     return json.loads(text)
 
 
+MAX_OBS_CHARS = 1500
+
+
+def _truncate(text: str, limit: int = 600) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "... [truncated]"
+
+
 def build_obs_prompt(obs: Any) -> str:
-    """Format an observation into a user prompt for the LLM."""
+    """Format an observation into a compact user prompt for the LLM."""
     parts = [
         f"Queue: {obs.queue_summary}",
-        f"Current Ad: {obs.current_ad_info}",
-        f"Feedback: {obs.feedback}",
+        f"Current Ad: {_truncate(obs.current_ad_info)}",
+        f"Feedback: {_truncate(obs.feedback)}",
         f"Available ads: {', '.join(obs.available_ads)}",
-        f"Verdicts so far: {obs.verdict_history_summary}",
     ]
+    if obs.verdict_history_summary and obs.verdict_history_summary != "No verdicts yet.":
+        parts.append(f"Verdicts: {_truncate(obs.verdict_history_summary, 400)}")
     if obs.investigation_findings:
-        parts.append(f"Investigation findings:\n{obs.investigation_findings}")
-    return "\n\n".join(parts)
+        parts.append(f"Findings:\n{_truncate(obs.investigation_findings, 600)}")
+    prompt = "\n\n".join(parts)
+    return prompt[:MAX_OBS_CHARS] if len(prompt) > MAX_OBS_CHARS else prompt
+
+
+class EpisodeLogger:
+    """Logs the full agent-environment conversation to a markdown file."""
+
+    def __init__(self, task_id: str, log_dir: Path) -> None:
+        self.task_id = task_id
+        self.lines: List[str] = []
+        log_dir.mkdir(parents=True, exist_ok=True)
+        self.path = log_dir / f"{task_id}_conversation.md"
+        self._md(f"# Episode Log — {task_id}\n")
+
+    def step_start(self, step: int, obs_prompt: str) -> None:
+        self._md(f"\n## Step {step}\n")
+        self._md(f"### Observation (sent to LLM)\n```\n{obs_prompt}\n```\n")
+
+    def llm_response(self, step: int, raw: str, action: AdReviewAction | None, fallback: bool) -> None:
+        tag = " [FALLBACK]" if fallback else ""
+        self._md(f"### LLM Response\n```json\n{raw.strip()}\n```\n")
+        if action:
+            act_dict = action.model_dump(exclude_none=True, exclude={"metadata"})
+            self._md(f"### Parsed Action{tag}\n```json\n{json.dumps(act_dict, indent=2)}\n```\n")
+
+    def env_feedback(self, step: int, reward: float, done: bool, feedback: str) -> None:
+        self._md(f"### Environment Response\n- **Reward:** `{reward:+.2f}`\n- **Done:** `{done}`\n")
+        self._md(f"- **Feedback:** {feedback}\n")
+
+    def episode_end(self, score: float, steps: int, verdicts: int, total: int) -> None:
+        summary = f"Score: {score:.3f} | Steps: {steps} | Verdicts: {verdicts}/{total}"
+        self._md(f"\n---\n## Result\n**{summary}**\n")
+        self._flush()
+
+    def _md(self, text: str) -> None:
+        self.lines.append(text)
+
+    def _flush(self) -> None:
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write("\n".join(self.lines))
 
 
 def run_single_task(
@@ -116,8 +173,9 @@ def run_single_task(
     api_key = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or API_KEY
     model = os.getenv("MODEL_NAME") or MODEL_NAME
 
-    client = OpenAI(base_url=base_url, api_key=api_key)
+    client = OpenAI(base_url=base_url, api_key=api_key, timeout=60.0)
     env = AdFraudEnv(base_url=env_base_url).sync()
+    elog = EpisodeLogger(task_id, LOG_DIR)  # For logging agent-environment conversation and can be commented out in production if needed
 
     try:
         env.connect()
@@ -128,11 +186,14 @@ def run_single_task(
         ]
 
         step_count = 0
+        max_steps = TASK_CONFIGS[task_id].action_budget if task_id in TASK_CONFIGS else 40
 
-        while not result.done and step_count < MAX_STEPS:
+        while not result.done and step_count < max_steps:
             obs = result.observation
             user_prompt = build_obs_prompt(obs)
             messages.append({"role": "user", "content": user_prompt})
+
+            elog.step_start(step_count, user_prompt)
 
             try:
                 completion = client.chat.completions.create(
@@ -149,11 +210,13 @@ def run_single_task(
 
             messages.append({"role": "assistant", "content": response_text})
 
+            fallback = False
             try:
                 action_data = _extract_json(response_text)
                 action = AdReviewAction(**action_data)
             except Exception as e:
                 logger.warning("Failed to parse action on step %d: %s", step_count, e)
+                fallback = True
                 if obs.available_ads:
                     action = AdReviewAction(
                         action_type="verdict",
@@ -162,18 +225,26 @@ def run_single_task(
                         confidence=0.3,
                     )
                 else:
+                    elog.llm_response(step_count, response_text, None, True)
                     break
+
+            elog.llm_response(step_count, response_text, action, fallback)
 
             result = env.step(action)
             step_count += 1
 
-            if len(messages) > 20:
-                messages = messages[:1] + messages[-18:]
+            elog.env_feedback(step_count, result.reward, result.done, result.observation.feedback)
+
+            if len(messages) > 10:
+                messages = messages[:1] + messages[-8:]
 
         state = env.state()
+        score = state.grader_score if state.grader_score is not None else 0.0
+        elog.episode_end(score, step_count, state.reviewed_count, state.total_ads)
+
         return {
             "task_id": task_id,
-            "score": state.grader_score if state.grader_score is not None else 0.0,
+            "score": score,
             "steps": step_count,
             "verdicts": state.reviewed_count,
             "total_ads": state.total_ads,
