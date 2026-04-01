@@ -1,25 +1,25 @@
 {
-  "baseline_model": "meta-llama/Llama-3.1-8B-Instruct",
+  "baseline_model": "llama3.1:8b",
   "seed": 42,
   "tasks": {
     "task_1": {
       "task_id": "task_1",
-      "score": 0.9311926605504588,
+      "score": 0.9357798165137616,
       "steps": 10,
       "verdicts": 5,
       "total_ads": 5
     },
     "task_2": {
       "task_id": "task_2",
-      "score": 0.6843054720384846,
-      "steps": 17,
+      "score": 0.8677089597113649,
+      "steps": 30,
       "verdicts": 12,
       "total_ads": 12
     },
     "task_3": {
       "task_id": "task_3",
-      "score": 0.5785401950891357,
-      "steps": 20,
+      "score": 0.8035654221325261,
+      "steps": 40,
       "verdicts": 20,
       "total_ads": 20
     }

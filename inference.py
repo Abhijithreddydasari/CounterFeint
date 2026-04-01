@@ -186,7 +186,7 @@ def run_single_task(
         ]
 
         step_count = 0
-        max_steps = TASK_CONFIGS[task_id].action_budget if task_id in TASK_CONFIGS else 40
+        max_steps = TASK_CONFIGS[task_id].action_budget if task_id in TASK_CONFIGS else 25
 
         while not result.done and step_count < max_steps:
             obs = result.observation
