@@ -48,7 +48,7 @@ class TestDeterminism:
         ep = generate_episode(seed=42, task_id="task_2")
         expected_targets = [
             "advertiser_history", "landing_page", "payment_method",
-            "targeting_overlap", "creative_similarity",
+            "targeting_overlap", "creative_similarity", "campaign_structure",
         ]
         for ad in ep.ads:
             assert ad.ad_id in ep.investigation_data

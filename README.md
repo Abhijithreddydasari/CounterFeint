@@ -19,7 +19,7 @@ Spend one budget point to reveal information about an ad.
 |---|---|---|
 | `action_type` | `"investigate"` | |
 | `ad_id` | `str` | Target ad (e.g., `"ad_001"`) |
-| `investigation_target` | `str` | One of: `advertiser_history`, `landing_page`, `payment_method`, `targeting_overlap`, `creative_similarity` |
+| `investigation_target` | `str` | One of: `advertiser_history`, `landing_page`, `payment_method`, `targeting_overlap`, `creative_similarity`, `campaign_structure` |
 
 ### `verdict`
 Render a final decision on an ad.
@@ -158,11 +158,11 @@ python inference.py
 
 Scores are generated with seed=42 using the model specified by `MODEL_NAME`. Set `API_BASE_URL`, `MODEL_NAME`, and `HF_TOKEN`, then run `python inference.py` to reproduce.
 
-| Task | Score | Steps |
-|---|---:|---:|
-| Task 1 (Easy) | TBD | TBD |
-| Task 2 (Medium) | TBD | TBD |
-| Task 3 (Hard) | TBD | TBD |
+| Task | Score | Steps | Verdicts |
+|---|---:|---:|---:|
+| Task 1 (Easy) | 0.936 | 10 | 5/5 |
+| Task 2 (Medium) | 0.868 | 30 | 12/12 |
+| Task 3 (Hard) | 0.804 | 40 | 20/20 |
 
 ## License
 

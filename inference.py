@@ -62,7 +62,7 @@ For each step, you must output a single JSON action. The action schema is:
   "ad_id": "<ad ID, e.g. ad_001>",
 
   // For investigate actions:
-  "investigation_target": "advertiser_history" | "landing_page" | "payment_method" | "targeting_overlap" | "creative_similarity",
+  "investigation_target": "advertiser_history" | "landing_page" | "payment_method" | "targeting_overlap" | "creative_similarity" | "campaign_structure",
 
   // For verdict actions:
   "verdict": "approve" | "reject" | "escalate",
