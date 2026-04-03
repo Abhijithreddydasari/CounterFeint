@@ -74,8 +74,8 @@ def generate_landing_page(
         redirect_count = rng.randint(1, 4)
         redirect_chain = [domain]
         for _ in range(redirect_count):
-            redirect_chain.append(f"redirect{rng.randint(1, 999)}.{rng.choice(['.click', '.top', '.xyz'])}")
-        redirect_chain.append(f"final-{rng.randint(1, 999)}.{rng.choice(['.site', '.store'])}")
+            redirect_chain.append(f"redirect{rng.randint(1, 999)}{rng.choice(['.click', '.top', '.xyz'])}")
+        redirect_chain.append(f"final-{rng.randint(1, 999)}{rng.choice(['.site', '.store'])}")
 
         suspicious = _get_fraud_suspicious_elements(rng, fraud_type)
         claims = _get_fraud_claims(rng, fraud_type)

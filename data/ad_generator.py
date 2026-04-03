@@ -94,6 +94,61 @@ TASK_CONFIGS: Dict[str, TaskConfig] = {
 
 
 @dataclass
+class CampaignProfile:
+    """Campaign-level metadata associated with an ad."""
+    objective: str          # e.g. "conversions", "traffic", "awareness", "app_installs"
+    bid_strategy: str       # e.g. "lowest_cost", "cost_cap", "bid_cap"
+    daily_budget_usd: float
+    ad_set_count: int
+    placements: List[str]
+
+    def to_investigation_text(self, account_age_days: int) -> str:
+        budget_age_ratio = (
+            self.daily_budget_usd / max(account_age_days, 1)
+        )
+        placements_str = ", ".join(self.placements)
+
+        lines = [
+            f"Campaign Objective: {self.objective}",
+            f"Bid Strategy: {self.bid_strategy}",
+            f"Daily Budget: ${self.daily_budget_usd:,.2f} "
+            f"(account is {account_age_days} days old — "
+            f"budget/age ratio: ${budget_age_ratio:,.2f}/day)",
+            f"Active Ad Sets: {self.ad_set_count}",
+            f"Placements: {placements_str}",
+        ]
+
+        warnings = []
+        if budget_age_ratio > 50:
+            warnings.append(
+                "Budget-to-account-age ratio exceeds typical thresholds."
+            )
+        if self.ad_set_count > 15:
+            warnings.append(
+                f"High ad set count ({self.ad_set_count}) — "
+                "possible policy evasion testing via creative variation."
+            )
+        if self.objective in ("traffic", "awareness") and self.bid_strategy == "lowest_cost":
+            warnings.append(
+                f"Optimizing for {self.objective} with lowest-cost bidding "
+                "— common in spray-and-pray fraud campaigns."
+            )
+        if "Audience Network" in self.placements and len(self.placements) <= 2:
+            warnings.append(
+                "Heavy reliance on Audience Network placement — "
+                "higher bot traffic exposure."
+            )
+
+        if warnings:
+            for w in warnings:
+                lines.append(f"  WARNING: {w}")
+        else:
+            lines.append("Budget and pacing consistent with historical account behavior.")
+
+        return "\n".join(lines)
+
+
+@dataclass
 class Ad:
     ad_id: str
     ad_copy: str
@@ -112,10 +167,10 @@ class GeneratedEpisode:
     task_config: TaskConfig
     ads: List[Ad]
     advertiser_profiles: Dict[str, AdvertiserProfile]
+    campaign_profiles: Dict[str, CampaignProfile]
     landing_pages: Dict[str, LandingPageData]
     fraud_rings: List[FraudRing]
     ad_to_rings: Dict[str, List[str]]
-    # Pre-generated investigation data keyed by (ad_id, investigation_type)
     investigation_data: Dict[str, Dict[str, str]]
 
 
@@ -142,8 +197,19 @@ def generate_episode(seed: int, task_id: str = "task_1") -> GeneratedEpisode:
                     ring_shared_payments[ad_id] = ring.shared_signals["payment_method"]
 
     advertiser_profiles: Dict[str, AdvertiserProfile] = {}
+    campaign_profiles: Dict[str, CampaignProfile] = {}
     landing_pages: Dict[str, LandingPageData] = {}
     investigation_data: Dict[str, Dict[str, str]] = {}
+
+    ring_campaign_overrides: Dict[str, Dict[str, Any]] = {}
+    for ring in fraud_rings:
+        shared_objective = rng.choice(["traffic", "awareness"])
+        shared_bid = "lowest_cost"
+        for ad_id in ring.member_ad_ids:
+            ring_campaign_overrides[ad_id] = {
+                "objective": shared_objective,
+                "bid_strategy": shared_bid,
+            }
 
     for ad in ads:
         is_fraud = ad.ground_truth_label in ("fraud", "escalate")
@@ -153,6 +219,12 @@ def generate_episode(seed: int, task_id: str = "task_1") -> GeneratedEpisode:
             payment_method_id=ring_shared_payments.get(ad.ad_id),
         )
         advertiser_profiles[ad.ad_id] = profile
+
+        campaign = _generate_campaign_profile(
+            rng, ad, is_fraud,
+            ring_overrides=ring_campaign_overrides.get(ad.ad_id),
+        )
+        campaign_profiles[ad.ad_id] = campaign
 
         landing_page_kwargs = {}
         if ad.ad_id in ad_to_rings:
@@ -171,12 +243,16 @@ def generate_episode(seed: int, task_id: str = "task_1") -> GeneratedEpisode:
         inv["payment_method"] = _generate_payment_investigation(rng, profile, ad.ad_id, ad_to_rings, fraud_rings)
         inv["targeting_overlap"] = _generate_targeting_investigation(rng, ad, ads, ad_to_rings, fraud_rings)
         inv["creative_similarity"] = _generate_creative_investigation(rng, ad, ads, ad_to_rings, fraud_rings)
+        inv["campaign_structure"] = _generate_campaign_investigation(
+            rng, ad, campaign, profile, ad_to_rings, fraud_rings,
+        )
         investigation_data[ad.ad_id] = inv
 
     return GeneratedEpisode(
         task_config=config,
         ads=ads,
         advertiser_profiles=advertiser_profiles,
+        campaign_profiles=campaign_profiles,
         landing_pages=landing_pages,
         fraud_rings=fraud_rings,
         ad_to_rings=ad_to_rings,
@@ -366,5 +442,87 @@ def _generate_creative_investigation(
     else:
         similarity = rng.uniform(0.0, 0.15)
         lines.append(f"  Similarity to known scam templates: {similarity:.0%}")
+
+    return "\n".join(lines)
+
+
+_LEGIT_OBJECTIVES = ["conversions", "leads", "sales", "app_installs"]
+_FRAUD_OBJECTIVES = ["traffic", "awareness", "reach", "engagement"]
+_LEGIT_BID_STRATEGIES = ["cost_cap", "bid_cap", "target_cost"]
+_FRAUD_BID_STRATEGIES = ["lowest_cost", "lowest_cost", "lowest_cost", "cost_cap"]
+
+_LEGIT_PLACEMENTS = [
+    ["Facebook Feed", "Instagram Feed"],
+    ["Facebook Feed", "Instagram Feed", "Instagram Stories"],
+    ["Facebook Feed"],
+    ["Facebook Feed", "Instagram Feed", "Instagram Reels"],
+]
+_FRAUD_PLACEMENTS = [
+    ["Audience Network", "Facebook Feed"],
+    ["Audience Network", "Facebook Feed", "Instagram Stories"],
+    ["Facebook Feed", "Instagram Feed", "Audience Network", "Messenger"],
+    ["Audience Network"],
+]
+
+
+def _generate_campaign_profile(
+    rng: random.Random,
+    ad: Ad,
+    is_fraud: bool,
+    *,
+    ring_overrides: Optional[Dict[str, Any]] = None,
+) -> CampaignProfile:
+    """Generate campaign-level metadata for an ad."""
+    if is_fraud:
+        objective = rng.choice(_FRAUD_OBJECTIVES)
+        bid_strategy = rng.choice(_FRAUD_BID_STRATEGIES)
+        daily_budget = round(rng.uniform(500, 5000), 2)
+        ad_set_count = rng.randint(8, 50)
+        placements = rng.choice(_FRAUD_PLACEMENTS)
+    else:
+        objective = rng.choice(_LEGIT_OBJECTIVES)
+        bid_strategy = rng.choice(_LEGIT_BID_STRATEGIES)
+        daily_budget = round(rng.uniform(20, 500), 2)
+        ad_set_count = rng.randint(1, 5)
+        placements = rng.choice(_LEGIT_PLACEMENTS)
+
+    if ring_overrides:
+        objective = ring_overrides.get("objective", objective)
+        bid_strategy = ring_overrides.get("bid_strategy", bid_strategy)
+
+    return CampaignProfile(
+        objective=objective,
+        bid_strategy=bid_strategy,
+        daily_budget_usd=daily_budget,
+        ad_set_count=ad_set_count,
+        placements=list(placements),
+    )
+
+
+def _generate_campaign_investigation(
+    rng: random.Random,
+    ad: Ad,
+    campaign: CampaignProfile,
+    profile: AdvertiserProfile,
+    ad_to_rings: Dict[str, List[str]],
+    fraud_rings: List[FraudRing],
+) -> str:
+    """Generate campaign structure investigation text."""
+    lines = [
+        f"Campaign Structure Analysis for {ad.ad_id}:",
+        campaign.to_investigation_text(profile.account_age_days),
+    ]
+
+    if ad.ad_id in ad_to_rings:
+        ring = next(r for r in fraud_rings if ad.ad_id in r.member_ad_ids)
+        other_ids = [mid for mid in ring.member_ad_ids if mid != ad.ad_id]
+        lines.append(
+            f"  MATCH: Identical campaign objective and bid strategy "
+            f"detected across ads: {', '.join(other_ids)}"
+        )
+        lines.append(
+            "  Multiple unrelated advertiser accounts running identical "
+            "campaign configurations is a coordinated fraud indicator."
+        )
 
     return "\n".join(lines)

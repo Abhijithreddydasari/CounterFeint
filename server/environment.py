@@ -511,7 +511,7 @@ class AdFraudEnvironment(
                     f"Initial risk signals: {signals}\n"
                     f"Investigations completed: {inv_status}\n"
                     f"Available investigation targets: advertiser_history, landing_page, "
-                    f"payment_method, targeting_overlap, creative_similarity"
+                    f"payment_method, targeting_overlap, creative_similarity, campaign_structure"
                 )
 
         investigation_findings = ""
