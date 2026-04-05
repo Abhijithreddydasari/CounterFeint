@@ -22,6 +22,7 @@ try:
         generate_episode,
     )
     from ..models import AdFraudState, AdReviewAction, AdReviewObservation
+    from ..graders.base_grader import EpisodeRecord, LinkResult, VerdictResult, grade_episode
 except ImportError:
     from data.ad_generator import (
         TASK_CONFIGS,
@@ -30,6 +31,7 @@ except ImportError:
         generate_episode,
     )
     from models import AdFraudState, AdReviewAction, AdReviewObservation
+    from graders.base_grader import EpisodeRecord, LinkResult, VerdictResult, grade_episode
 
 logger = logging.getLogger(__name__)
 
@@ -313,9 +315,7 @@ class AdFraudEnvironment(
             return -0.05
 
     def _handle_episode_end(self) -> float:
-        """Apply end-of-episode adjustments for unreviewed ads and bonuses."""
-        reward = 0.0
-
+        """Apply end-of-episode adjustments for unreviewed ads, then delegate to graders."""
         unreviewed_fraud = 0
         for ad in self._episode.ads:
             if ad.ad_id not in self._verdicts:
@@ -327,7 +327,10 @@ class AdFraudEnvironment(
                 }
                 if ad.ground_truth_label == "fraud":
                     unreviewed_fraud += 1
-                    reward -= 0.3
+
+        record = self._build_episode_record()
+        grader_score = grade_episode(record)
+        self._state.grader_score = grader_score
 
         total_correct = sum(
             1 for v in self._verdicts.values()
@@ -338,16 +341,6 @@ class AdFraudEnvironment(
                 or (v["verdict"] == "escalate" and v["ground_truth"] == "escalate")
             )
         )
-        total_actions = self._state.step_count
-        if total_actions > 0:
-            efficiency = (total_correct / total_actions) * 0.2
-            reward += efficiency
-
-        if self._episode.fraud_rings:
-            reward += self._compute_network_bonus()
-
-        grader_score = self._compute_grader_score()
-        self._state.grader_score = grader_score
 
         global _last_grader_result
         _last_grader_result = {
@@ -371,67 +364,42 @@ class AdFraudEnvironment(
             f"Correct decisions: {total_correct}/{len(self._verdicts)}"
         )
 
-        return reward
+        return 0.0
 
-    def _compute_network_bonus(self) -> float:
-        """Bonus for correctly identifying fraud network members."""
-        if not self._episode.fraud_rings:
-            return 0.0
-
-        bonus = 0.0
-        for ring in self._episode.fraud_rings:
-            members = set(ring.member_ad_ids)
-            identified_pairs = set()
-            for link in self._links:
-                if link["correct"]:
-                    pair = frozenset([link["ad_id_1"], link["ad_id_2"]])
-                    if pair.issubset(members):
-                        identified_pairs.add(pair)
-
-            n_possible_pairs = len(members) * (len(members) - 1) // 2
-            if n_possible_pairs > 0:
-                coverage = len(identified_pairs) / n_possible_pairs
-                if coverage >= 0.8:
-                    bonus += 0.3
-                else:
-                    bonus += 0.3 * coverage
-
-        return bonus
-
-    def _compute_grader_score(self) -> float:
-        """Normalize cumulative reward to 0.0-1.0 for OpenEnv compliance."""
-        config = self._episode.task_config
-
-        best_case = 0.0
+    def _build_episode_record(self) -> EpisodeRecord:
+        """Convert internal state into an EpisodeRecord for the grader."""
+        verdict_results = []
         for ad in self._episode.ads:
-            if ad.ground_truth_label == "fraud":
-                best_case += 0.3 + 0.1 * ad.severity
-            elif ad.ground_truth_label == "legit":
-                best_case += 0.1
-            elif ad.ground_truth_label == "escalate":
-                best_case += 0.15
-        best_case += 0.2
+            v = self._verdicts.get(ad.ad_id)
+            if v:
+                verdict_results.append(VerdictResult(
+                    ad_id=ad.ad_id,
+                    verdict=v["verdict"],
+                    confidence=v.get("confidence", 0.5),
+                    ground_truth=v["ground_truth"],
+                    auto_approved=v.get("auto_approved", False),
+                ))
 
-        if config.include_networks and self._episode.fraud_rings:
-            best_case += 0.3 * len(self._episode.fraud_rings)
+        link_results = [
+            LinkResult(ad_id_1=l["ad_id_1"], ad_id_2=l["ad_id_2"], correct=l["correct"])
+            for l in self._links
+        ]
 
-        worst_case = 0.0
-        for ad in self._episode.ads:
-            if ad.ground_truth_label == "fraud":
-                worst_case -= 0.5
-            elif ad.ground_truth_label == "legit":
-                worst_case -= 0.4
-            elif ad.ground_truth_label == "escalate":
-                worst_case -= 0.15
-        worst_case -= config.action_budget * 0.02
+        ads_metadata = [
+            {"ad_id": ad.ad_id, "ground_truth": ad.ground_truth_label, "severity": ad.severity}
+            for ad in self._episode.ads
+        ]
 
-        raw = self._cumulative_reward
-        score_range = best_case - worst_case
-        if score_range <= 0:
-            return 0.5
-
-        normalized = (raw - worst_case) / score_range
-        return max(0.0, min(1.0, normalized))
+        return EpisodeRecord(
+            task_id=self._state.task_id,
+            total_steps=self._state.step_count,
+            action_budget=self._episode.task_config.action_budget,
+            verdicts=verdict_results,
+            links=link_results,
+            ads_metadata=ads_metadata,
+            n_fraud_rings=len(self._episode.fraud_rings),
+            ring_sizes=[len(r.member_ad_ids) for r in self._episode.fraud_rings],
+        )
 
     # ------------------------------------------------------------------
     # Helpers
@@ -443,9 +411,8 @@ class AdFraudEnvironment(
         all_reviewed = all(
             ad.ad_id in self._verdicts for ad in self._episode.ads
         )
-        no_budget = self._state.remaining_budget <= 0
         steps_exhausted = self._state.step_count >= self._episode.task_config.action_budget
-        return all_reviewed or no_budget or steps_exhausted
+        return all_reviewed or steps_exhausted
 
     def _check_link_correct(self, ad_id_1: str, ad_id_2: str) -> bool:
         """Check if two ads share a fraud ring."""
@@ -487,12 +454,14 @@ class AdFraudEnvironment(
         pending = [a for a in self._episode.ads if a.ad_id not in self._verdicts]
         reviewed = [a for a in self._episode.ads if a.ad_id in self._verdicts]
 
+        steps_remaining = max(0, config.action_budget - self._state.step_count)
         queue_summary = (
             f"Task: {config.name} ({config.difficulty})\n"
             f"Total ads: {config.queue_size} | "
             f"Reviewed: {len(reviewed)} | "
             f"Pending: {len(pending)} | "
-            f"Budget remaining: {self._state.remaining_budget} actions | "
+            f"Steps remaining: {steps_remaining}/{config.action_budget} | "
+            f"Investigation budget: {self._state.remaining_budget} | "
             f"Step: {self._state.step_count}"
         )
 
@@ -535,7 +504,8 @@ class AdFraudEnvironment(
             "total_ads": config.queue_size,
             "reviewed": len(reviewed),
             "pending": len(pending),
-            "remaining_budget": self._state.remaining_budget,
+            "investigation_budget": self._state.remaining_budget,
+            "steps_remaining": steps_remaining,
             "step": self._state.step_count,
             "task_id": config.task_id,
         }
