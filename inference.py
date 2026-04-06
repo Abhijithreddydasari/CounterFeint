@@ -6,9 +6,17 @@ MANDATORY
     API_BASE_URL   The API endpoint for the LLM.
     MODEL_NAME     The model identifier to use for inference.
     HF_TOKEN       Your Hugging Face / API key.
+    LOCAL_IMAGE_NAME The name of the local image to use for the environment if you are using from_docker_image()
 
 - The inference script must be named `inference.py` and placed in the root directory of the project
 - Participants must use OpenAI Client for all LLM calls using above variables
+
+STDOUT FORMAT
+- The script must emit exactly three line types to stdout, in this order:
+
+    [START] task=<task_name> env=<benchmark> model=<model_name>
+    [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
+    [END]   success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
 """
 
 from __future__ import annotations
@@ -19,7 +27,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
@@ -32,6 +40,7 @@ except ImportError:
     from ad_fraud_env.client import AdFraudEnv
     from ad_fraud_env.models import AdReviewAction
     from ad_fraud_env.data.ad_generator import TASK_CONFIGS
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -44,12 +53,58 @@ Here are the details of Hugging Face models:
 API_BASE_URL: https://router.huggingface.co/v1
 MODEL_NAME: meta-llama/Llama-3.1-8B-Instruct
 """
+MODEL_NAME = os.getenv("MODEL_NAME") or "meta-llama/Llama-3.1-8B-Instruct"
+IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("IMAGE_NAME")
+ENV_URL = os.getenv("AD_FRAUD_ENV_URL", "http://localhost:8000")
+BENCHMARK = "ad_fraud_env"
 TEMPERATURE = 0.1
 MAX_TOKENS = 256
 FALLBACK_VERDICT = "escalate"
 
 logger = logging.getLogger(__name__)
 LOG_DIR = Path(__file__).resolve().parent / "convo_logging"
+
+# ---------------------------------------------------------------------------
+# Mandatory structured stdout logging
+# ---------------------------------------------------------------------------
+
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+
+
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_val = error if error else "null"
+    done_val = str(done).lower()
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} "
+        f"done={done_val} error={error_val}",
+        flush=True,
+    )
+
+
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(
+        f"[END] success={str(success).lower()} steps={steps} "
+        f"score={score:.2f} rewards={rewards_str}",
+        flush=True,
+    )
+
+
+def _format_action(action: AdReviewAction) -> str:
+    """Compact action string for [STEP] log line."""
+    if action.action_type == "investigate":
+        return f"investigate({action.ad_id},{action.investigation_target})"
+    elif action.action_type == "verdict":
+        conf = action.confidence if action.confidence is not None else 0.5
+        return f"verdict({action.ad_id},{action.verdict},{conf:.2f})"
+    elif action.action_type == "link_accounts":
+        return f"link_accounts({action.ad_id},{action.linked_ad_id})"
+    return f"unknown({action.ad_id})"
+
+# ---------------------------------------------------------------------------
+# System prompt & helpers
+# ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
 You are an ad fraud investigator reviewing a queue of advertisements.
@@ -124,6 +179,9 @@ def build_obs_prompt(obs: Any) -> str:
     prompt = "\n\n".join(parts)
     return prompt[:MAX_OBS_CHARS] if len(prompt) > MAX_OBS_CHARS else prompt
 
+# ---------------------------------------------------------------------------
+# Episode logger (markdown, for debugging — separate from mandatory stdout)
+# ---------------------------------------------------------------------------
 
 class EpisodeLogger:
     """Logs the full agent-environment conversation to a markdown file."""
@@ -162,20 +220,33 @@ class EpisodeLogger:
         with open(self.path, "w", encoding="utf-8") as f:
             f.write("\n".join(self.lines))
 
+# ---------------------------------------------------------------------------
+# Core task runner
+# ---------------------------------------------------------------------------
 
 def run_single_task(
     task_id: str,
     seed: int = 42,
     env_base_url: str = "http://localhost:8000",
 ) -> Dict[str, Any]:
-    """Run the baseline agent on a single task and return the score."""
+    """Run the baseline agent on a single task with mandatory [START]/[STEP]/[END] logging."""
     base_url = os.getenv("API_BASE_URL") or API_BASE_URL
     api_key = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or API_KEY
     model = os.getenv("MODEL_NAME") or MODEL_NAME
 
     client = OpenAI(base_url=base_url, api_key=api_key, timeout=60.0)
     env = AdFraudEnv(base_url=env_base_url).sync()
-    elog = EpisodeLogger(task_id, LOG_DIR)  # For logging agent-environment conversation and can be commented out in production if needed
+    elog = EpisodeLogger(task_id, LOG_DIR)
+
+    config = TASK_CONFIGS.get(task_id)
+    max_steps = config.action_budget if config else 25
+
+    rewards: List[float] = []
+    steps_taken = 0
+    score = 0.0
+    success = False
+
+    log_start(task=task_id, env=BENCHMARK, model=model)
 
     try:
         env.connect()
@@ -185,15 +256,12 @@ def run_single_task(
             {"role": "system", "content": SYSTEM_PROMPT},
         ]
 
-        step_count = 0
-        max_steps = TASK_CONFIGS[task_id].action_budget if task_id in TASK_CONFIGS else 25
-
-        while not result.done and step_count < max_steps:
+        while not result.done and steps_taken < max_steps:
             obs = result.observation
             user_prompt = build_obs_prompt(obs)
             messages.append({"role": "user", "content": user_prompt})
 
-            elog.step_start(step_count, user_prompt)
+            elog.step_start(steps_taken, user_prompt)
 
             try:
                 completion = client.chat.completions.create(
@@ -205,18 +273,20 @@ def run_single_task(
                 )
                 response_text = completion.choices[0].message.content or "{}"
             except Exception as exc:
-                logger.warning("Model request failed on step %d: %s", step_count, exc)
+                logger.warning("Model request failed on step %d: %s", steps_taken, exc)
                 response_text = "{}"
 
             messages.append({"role": "assistant", "content": response_text})
 
+            error_msg = None
             fallback = False
             try:
                 action_data = _extract_json(response_text)
                 action = AdReviewAction(**action_data)
             except Exception as e:
-                logger.warning("Failed to parse action on step %d: %s", step_count, e)
+                logger.warning("Failed to parse action on step %d: %s", steps_taken, e)
                 fallback = True
+                error_msg = str(e)
                 if obs.available_ads:
                     action = AdReviewAction(
                         action_type="verdict",
@@ -225,40 +295,61 @@ def run_single_task(
                         confidence=0.3,
                     )
                 else:
-                    elog.llm_response(step_count, response_text, None, True)
+                    elog.llm_response(steps_taken, response_text, None, True)
                     break
 
-            elog.llm_response(step_count, response_text, action, fallback)
+            elog.llm_response(steps_taken, response_text, action, fallback)
 
             result = env.step(action)
-            step_count += 1
+            steps_taken += 1
+            reward = result.reward or 0.0
+            rewards.append(reward)
 
-            elog.env_feedback(step_count, result.reward, result.done, result.observation.feedback)
+            log_step(
+                step=steps_taken,
+                action=_format_action(action),
+                reward=reward,
+                done=result.done,
+                error=error_msg,
+            )
+
+            elog.env_feedback(steps_taken, reward, result.done, result.observation.feedback)
 
             if len(messages) > 10:
                 messages = messages[:1] + messages[-8:]
 
         state = env.state()
         score = state.grader_score if state.grader_score is not None else 0.0
-        elog.episode_end(score, step_count, state.reviewed_count, state.total_ads)
+        score = max(0.0, min(1.0, score))
+        success = score > 0.0
+
+        elog.episode_end(score, steps_taken, state.reviewed_count, state.total_ads)
 
         return {
             "task_id": task_id,
             "score": score,
-            "steps": step_count,
+            "steps": steps_taken,
             "verdicts": state.reviewed_count,
             "total_ads": state.total_ads,
         }
 
+    except Exception as e:
+        logger.error("Task %s failed: %s", task_id, e)
+        return {"task_id": task_id, "score": 0.0, "error": str(e)}
+
     finally:
-        env.close()
+        try:
+            env.close()
+        except Exception as e:
+            print(f"[DEBUG] env.close() error: {e}", flush=True)
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 
 def run_baseline(
     env_base_url: str = "http://localhost:8000",
 ) -> Dict[str, Any]:
     """Run baseline inference on all 3 tasks."""
-    model = os.getenv("MODEL_NAME") or MODEL_NAME or "unknown"
+    model = os.getenv("MODEL_NAME") or MODEL_NAME
     results: Dict[str, Any] = {}
     for task_id in ["task_1", "task_2", "task_3"]:
         logger.info("Running baseline for %s...", task_id)

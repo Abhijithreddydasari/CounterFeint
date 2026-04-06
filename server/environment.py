@@ -472,12 +472,24 @@ class AdFraudEnvironment(
                 signals = ", ".join(ad.initial_risk_signals) if ad.initial_risk_signals else "None"
                 investigated = self._investigations.get(ad.ad_id, [])
                 inv_status = ", ".join(investigated) if investigated else "None yet"
+
+                # Contextual metadata visible before investigation
+                profile = self._episode.advertiser_profiles.get(ad.ad_id)
+                meta_lines = []
+                if profile:
+                    meta_lines.append(f"Advertiser country: {profile.country}")
+                    meta_lines.append(f"Account age: {profile.account_age_days} days")
+                    if profile.account_age_days < 30:
+                        meta_lines.append("Flag: New account (< 30 days)")
+                context_meta = "\n".join(meta_lines)
+
                 current_ad_info = (
                     f"=== Ad in Focus: {ad.ad_id} ===\n"
                     f"Category: {ad.category}\n"
                     f"Ad copy: \"{ad.ad_copy}\"\n"
                     f"Targeting: {ad.targeting_summary}\n"
                     f"Initial risk signals: {signals}\n"
+                    f"{context_meta}\n"
                     f"Investigations completed: {inv_status}\n"
                     f"Available investigation targets: advertiser_history, landing_page, "
                     f"payment_method, targeting_overlap, creative_similarity, campaign_structure"

@@ -43,6 +43,7 @@ class TestDeterminism:
         for ring in ep.fraud_rings:
             assert len(ring.member_ad_ids) >= 3
             assert len(ring.shared_signals) >= 2
+            assert ring.topology in ("clique", "chain", "hub_spoke")
 
     def test_investigation_data_exists_for_all_ads(self):
         ep = generate_episode(seed=42, task_id="task_2")
@@ -63,3 +64,78 @@ class TestDeterminism:
         labels = [a.ground_truth_label for a in ep.ads]
         assert "fraud" in labels
         assert "legit" in labels
+
+
+class TestNoExplicitCrossAdReferences:
+    """Investigation text must not explicitly name other ad IDs."""
+
+    def test_payment_investigation_no_cross_refs(self):
+        ep = generate_episode(seed=42, task_id="task_3")
+        for ad_id, inv in ep.investigation_data.items():
+            text = inv["payment_method"]
+            for other_ad in ep.investigation_data:
+                if other_ad == ad_id:
+                    continue
+                assert other_ad not in text, (
+                    f"Payment investigation for {ad_id} references {other_ad}"
+                )
+
+    def test_targeting_investigation_no_cross_refs(self):
+        ep = generate_episode(seed=42, task_id="task_3")
+        for ad_id, inv in ep.investigation_data.items():
+            text = inv["targeting_overlap"]
+            assert "HIGH OVERLAP detected with:" not in text
+
+    def test_creative_investigation_no_cross_refs(self):
+        ep = generate_episode(seed=42, task_id="task_3")
+        for ad_id, inv in ep.investigation_data.items():
+            text = inv["creative_similarity"]
+            assert "STRONG SIMILARITY detected with:" not in text
+
+    def test_campaign_investigation_no_cross_refs(self):
+        ep = generate_episode(seed=42, task_id="task_3")
+        for ad_id, inv in ep.investigation_data.items():
+            text = inv["campaign_structure"]
+            assert "MATCH:" not in text
+
+
+class TestDecoysAndRealism:
+    def test_advertiser_profiles_have_temporal_signals(self):
+        ep = generate_episode(seed=42, task_id="task_2")
+        for ad_id, profile in ep.advertiser_profiles.items():
+            assert profile.account_created_date, f"Missing created date for {ad_id}"
+            assert profile.spend_velocity, f"Missing spend velocity for {ad_id}"
+            assert profile.ad_submission_pattern, f"Missing submission pattern for {ad_id}"
+
+    def test_temporal_signals_appear_in_investigation(self):
+        ep = generate_episode(seed=42, task_id="task_2")
+        for ad_id, inv in ep.investigation_data.items():
+            text = inv["advertiser_history"]
+            assert "Account created:" in text or "Account age:" in text
+            assert "Spend velocity:" in text or "spend" in text.lower()
+
+    def test_ring_members_share_creation_week(self):
+        """Ring members should have account creation dates within 7 days of each other."""
+        from datetime import date
+        ep = generate_episode(seed=42, task_id="task_3")
+        for ring in ep.fraud_rings:
+            dates = []
+            for ad_id in ring.member_ad_ids:
+                profile = ep.advertiser_profiles[ad_id]
+                d = date.fromisoformat(profile.account_created_date)
+                dates.append(d)
+            if len(dates) >= 2:
+                spread = (max(dates) - min(dates)).days
+                assert spread <= 7, (
+                    f"Ring {ring.ring_id} creation dates spread: {spread} days"
+                )
+
+    def test_investigation_has_whois_privacy_info(self):
+        ep = generate_episode(seed=42, task_id="task_2")
+        found_whois = False
+        for ad_id, inv in ep.investigation_data.items():
+            text = inv["landing_page"]
+            if "WHOIS privacy:" in text:
+                found_whois = True
+                break
+        assert found_whois, "At least one landing page should mention WHOIS privacy"

@@ -30,17 +30,19 @@ class LandingPageData:
         suspicious = "\n".join(f"  - {s}" for s in self.suspicious_elements) if self.suspicious_elements else "  None detected"
         claims = "\n".join(f"  - {c}" for c in self.key_claims) if self.key_claims else "  None"
 
-        return (
-            f"Domain: {self.domain}\n"
-            f"Domain age: {self.domain_age_days} days\n"
-            f"SSL: {ssl_status}\n"
-            f"Registrar: {self.registrar}\n"
-            f"Redirect chain: {redirects}\n"
-            f"Similarity to known scam templates: {self.similarity_to_known_scams:.0%}\n"
-            f"Key claims on page:\n{claims}\n"
-            f"Suspicious elements:\n{suspicious}\n"
-            f"Content summary: {self.content_summary}"
-        )
+        lines = [
+            f"Domain: {self.domain}",
+            f"Domain age: {self.domain_age_days} days",
+            f"SSL: {ssl_status}",
+            f"Registrar: {self.registrar}",
+            f"WHOIS privacy: {'Enabled' if 'privacy' in self.registrar.lower() or 'proxy' in self.registrar.lower() else 'Disabled (registrant info public)'}",
+            f"Redirect chain: {redirects}",
+            f"Similarity to known scam templates: {self.similarity_to_known_scams:.0%}",
+            f"Key claims on page:\n{claims}",
+            f"Suspicious elements:\n{suspicious}",
+            f"Content summary: {self.content_summary}",
+        ]
+        return "\n".join(lines)
 
 
 _LEGIT_REGISTRARS = ["GoDaddy", "Namecheap", "Google Domains", "Cloudflare Registrar", "AWS Route 53"]
