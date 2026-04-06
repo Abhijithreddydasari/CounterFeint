@@ -339,6 +339,8 @@ FRAUD_TEMPLATES: List[AdTemplate] = [
     ),
 
     # === NETWORK SCAMS (Task 3 — individual ads that belong to fraud rings) ===
+    # These templates look almost entirely legitimate on the surface.
+    # The fraud is only detectable through cross-ad investigation.
     AdTemplate(
         category="network_crypto",
         ad_copies=[
@@ -376,6 +378,50 @@ FRAUD_TEMPLATES: List[AdTemplate] = [
             "Adults 25-50, interests: camping, outdoor gear",
             "Adults 25-55, interests: home office, ergonomics",
             "Adults 25-55, interests: smart home, cleaning",
+        ],
+        risk_signals=[],
+        label="fraud",
+        fraud_type="coordinated_network",
+        severity=0.5,
+        difficulty="hard",
+    ),
+    AdTemplate(
+        category="network_fintech",
+        ad_copies=[
+            "Simplify your bookkeeping. AI-powered categorization, bank sync, tax-ready reports. LedgerFlow.",
+            "Expense management for growing teams. Real-time tracking, receipt scanning, approval workflows. SpendWise.",
+            "Invoicing made simple. Send professional invoices in 30 seconds. Accept 40+ payment methods. BillStream.",
+            "Payroll for startups — automated tax filings, direct deposit, compliance included. PayRun HR.",
+            "Business credit monitoring. Real-time alerts, score tracking, credit-building tips. BizCredit Insights.",
+        ],
+        targeting_hints=[
+            "Small business owners 28-55, interests: accounting, bookkeeping",
+            "Finance managers 30-50, interests: expense management, SaaS",
+            "Freelancers 22-45, interests: invoicing, self-employment",
+            "Startup founders 25-45, interests: payroll, HR tech",
+            "Entrepreneurs 30-55, interests: business credit, finance",
+        ],
+        risk_signals=[],
+        label="fraud",
+        fraud_type="coordinated_network",
+        severity=0.55,
+        difficulty="hard",
+    ),
+    AdTemplate(
+        category="network_health",
+        ad_copies=[
+            "Telehealth appointments in minutes. Board-certified physicians, prescriptions delivered. MediConnect Health.",
+            "Mental wellness platform. Licensed therapists, flexible scheduling, insurance accepted. MindBridge Care.",
+            "At-home lab testing. Comprehensive panels, fast results, doctor-reviewed. HealthCheck Direct.",
+            "Nutrition coaching backed by science. Personalized meal plans from registered dietitians. NutriGuide Pro.",
+            "Fitness tracking reimagined. AI-powered workout plans, progress analytics, community support. FitMetrics.",
+        ],
+        targeting_hints=[
+            "Adults 25-60, interests: telemedicine, healthcare",
+            "Adults 25-50, interests: mental health, therapy, wellness",
+            "Health-conscious adults 30-55, interests: lab testing, preventive health",
+            "Adults 25-50, interests: nutrition, diet planning, health",
+            "Fitness enthusiasts 20-45, interests: fitness tracking, wearables",
         ],
         risk_signals=[],
         label="fraud",

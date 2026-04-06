@@ -26,6 +26,9 @@ class AdvertiserProfile:
     payment_method_type: str
     country: str
     verified_business: bool
+    account_created_date: str = ""
+    spend_velocity: str = ""
+    ad_submission_pattern: str = ""
 
     def to_investigation_text(self) -> str:
         status = "Verified Business" if self.verified_business else "Unverified"
@@ -35,15 +38,19 @@ class AdvertiserProfile:
         elif self.previous_bans > 0:
             violation_note = f" ({self.previous_bans} previous bans on record)"
 
-        return (
-            f"Advertiser: {self.account_name} ({status})\n"
-            f"Account age: {self.account_age_days} days\n"
-            f"Country: {self.country}\n"
-            f"Total historical spend: ${self.total_spend_usd:,.2f}\n"
-            f"Ads submitted in last 30 days: {self.ad_volume_last_30d}\n"
-            f"Historical approval rate: {self.historical_approval_rate:.0%}{violation_note}\n"
-            f"Payment method: {self.payment_method_type} (ID: {self.payment_method_id})"
-        )
+        lines = [
+            f"Advertiser: {self.account_name} ({status})",
+            f"Account age: {self.account_age_days} days",
+            f"Account created: {self.account_created_date}" if self.account_created_date else None,
+            f"Country: {self.country}",
+            f"Total historical spend: ${self.total_spend_usd:,.2f}",
+            f"Ads submitted in last 30 days: {self.ad_volume_last_30d}",
+            f"Historical approval rate: {self.historical_approval_rate:.0%}{violation_note}",
+            f"Payment method: {self.payment_method_type} (ID: {self.payment_method_id})",
+            f"Spend velocity: {self.spend_velocity}" if self.spend_velocity else None,
+            f"Submission pattern: {self.ad_submission_pattern}" if self.ad_submission_pattern else None,
+        ]
+        return "\n".join(l for l in lines if l is not None)
 
 
 _LEGIT_NAMES = [
@@ -80,8 +87,10 @@ def generate_advertiser_profile(
     is_fraud: bool,
     *,
     payment_method_id: str | None = None,
+    ring_created_date: str | None = None,
 ) -> AdvertiserProfile:
     """Generate a synthetic advertiser profile for a single ad."""
+    from datetime import date, timedelta
 
     if is_fraud:
         account_name = rng.choice(_SCAM_NAMES)
@@ -109,6 +118,29 @@ def generate_advertiser_profile(
     if payment_method_id is None:
         payment_method_id = f"pmt_{rng.randint(100000, 999999)}"
 
+    # Temporal signals
+    if ring_created_date:
+        created_date = ring_created_date
+    else:
+        created = date(2026, 4, 6) - timedelta(days=account_age)
+        created_date = created.isoformat()
+
+    if is_fraud:
+        spend_per_day = total_spend / max(account_age, 1)
+        if spend_per_day > 20:
+            spend_velocity = f"${spend_per_day:,.0f}/day avg — ramped from $0 to ${total_spend:,.0f} in {account_age} days"
+        else:
+            spend_velocity = f"${spend_per_day:,.0f}/day avg over account lifetime"
+
+        if ad_volume > 20:
+            submission_pattern = f"{ad_volume} ads in 30 days (burst: {rng.randint(8, ad_volume)} in a single 24h window)"
+        else:
+            submission_pattern = f"{ad_volume} ads in 30 days (steady cadence)"
+    else:
+        spend_per_day = total_spend / max(account_age, 1)
+        spend_velocity = f"${spend_per_day:,.0f}/day avg — consistent growth over {account_age} days"
+        submission_pattern = f"{ad_volume} ads in 30 days (steady cadence)"
+
     return AdvertiserProfile(
         advertiser_id=f"adv_{ad_id}",
         account_name=account_name,
@@ -122,4 +154,7 @@ def generate_advertiser_profile(
         payment_method_type=pmt_type,
         country=country,
         verified_business=verified,
+        account_created_date=created_date,
+        spend_velocity=spend_velocity,
+        ad_submission_pattern=submission_pattern,
     )
