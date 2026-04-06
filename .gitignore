@@ -1,4 +1,5 @@
 .env
+.env.*
 .venv/
 __pycache__/
 *.pyc
@@ -7,6 +8,10 @@ __pycache__/
 dist/
 build/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 baseline_scores.json
 outputs/
 convo_logging/
+*.log
+Review.md

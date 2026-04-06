@@ -17,6 +17,16 @@ from .fraud_patterns import FRAUD_TEMPLATES, LEGIT_TEMPLATES, AdTemplate
 from .landing_pages import LandingPageData, generate_landing_page
 from .network_generator import FraudRing, generate_fraud_networks
 
+# Decoy pools: values that can appear in both legit and fraud ads,
+# making naive pattern-matching unreliable.
+_DECOY_REGISTRARS = ["NameSilo", "Cloudflare Registrar", "GoDaddy", "Tucows (privacy proxy)"]
+_DECOY_PAYMENT_TYPES = ["credit_card", "prepaid_card", "corporate_card"]
+_COMMON_TARGETING_SEGMENTS = [
+    "Adults 25-54, interests: shopping, lifestyle",
+    "Adults 18-45, interests: technology, gadgets",
+    "Adults 30-55, interests: finance, investing",
+]
+
 
 @dataclass
 class TaskConfig:
@@ -76,7 +86,7 @@ TASK_CONFIGS: Dict[str, TaskConfig] = {
         name="Coordinated Fraud Network Detection",
         difficulty="hard",
         queue_size=20,
-        action_budget=40,
+        action_budget=35,
         n_legit=6,
         n_fraud=10,
         n_escalate=4,
@@ -85,9 +95,10 @@ TASK_CONFIGS: Dict[str, TaskConfig] = {
         allowed_difficulties=["easy", "medium", "hard"],
         description=(
             "Full challenge including coordinated fraud rings. 20 ads with 3 "
-            "hidden fraud networks (clusters of 3-5 ads sharing signals). "
-            "Budget of 40 actions (2 per ad). Individual ring ads may look "
-            "borderline — the signal is in the connections."
+            "hidden fraud networks using varied topologies (cliques, chains, "
+            "hub-and-spoke). Budget of 35 actions (~1.75 per ad). Ring member "
+            "ads look borderline individually — the agent must cross-reference "
+            "investigation data across ads to detect shared signals."
         ),
     ),
 }
@@ -202,14 +213,20 @@ def generate_episode(seed: int, task_id: str = "task_1") -> GeneratedEpisode:
     investigation_data: Dict[str, Dict[str, str]] = {}
 
     ring_campaign_overrides: Dict[str, Dict[str, Any]] = {}
+    ring_created_dates: Dict[str, str] = {}
     for ring in fraud_rings:
         shared_objective = rng.choice(["traffic", "awareness"])
         shared_bid = "lowest_cost"
+        # Ring members share account creation dates within the same week
+        from datetime import date, timedelta
+        base_date = date(2026, 4, 6) - timedelta(days=rng.randint(5, 45))
         for ad_id in ring.member_ad_ids:
             ring_campaign_overrides[ad_id] = {
                 "objective": shared_objective,
                 "bid_strategy": shared_bid,
             }
+            offset = timedelta(days=rng.randint(0, 6))
+            ring_created_dates[ad_id] = (base_date + offset).isoformat()
 
     for ad in ads:
         is_fraud = ad.ground_truth_label in ("fraud", "escalate")
@@ -217,6 +234,7 @@ def generate_episode(seed: int, task_id: str = "task_1") -> GeneratedEpisode:
         profile = generate_advertiser_profile(
             rng, ad.ad_id, is_fraud,
             payment_method_id=ring_shared_payments.get(ad.ad_id),
+            ring_created_date=ring_created_dates.get(ad.ad_id),
         )
         advertiser_profiles[ad.ad_id] = profile
 
@@ -231,6 +249,8 @@ def generate_episode(seed: int, task_id: str = "task_1") -> GeneratedEpisode:
             ring = next(r for r in fraud_rings if ad.ad_id in r.member_ad_ids)
             if "domain_registrar" in ring.shared_signals:
                 landing_page_kwargs["registrar_override"] = ring.shared_signals["domain_registrar"]
+        elif not is_fraud and rng.random() < 0.25:
+            landing_page_kwargs["registrar_override"] = rng.choice(_DECOY_REGISTRARS)
 
         lp = generate_landing_page(
             rng, ad.ad_id, is_fraud, ad.fraud_type, **landing_page_kwargs
@@ -349,28 +369,30 @@ def _generate_payment_investigation(
     ad_to_rings: Dict[str, List[str]],
     fraud_rings: List[FraudRing],
 ) -> str:
-    """Generate payment method investigation text."""
+    """Generate payment method investigation text.
+
+    Ring signals are embedded as raw data values (shared payment IDs) without
+    explicitly naming other ads. The agent must cross-reference across ads.
+    """
     lines = [
         f"Payment Method Analysis for {ad_id}:",
         f"  Method type: {profile.payment_method_type}",
         f"  Payment ID: {profile.payment_method_id}",
     ]
 
-    if ad_id in ad_to_rings:
-        ring = next(r for r in fraud_rings if ad_id in r.member_ad_ids)
-        if "payment_method" in ring.shared_signals:
-            other_count = ring.size - 1
-            lines.append(f"  WARNING: This payment method is shared with {other_count} other advertiser account(s) in the current queue.")
-            lines.append(f"  Shared payment method ID: {ring.shared_signals['payment_method']}")
-        else:
-            lines.append("  No other accounts in the current queue share this payment method.")
-    else:
-        if profile.payment_method_type in ("prepaid_card", "crypto", "virtual_card"):
-            lines.append(f"  Note: {profile.payment_method_type} payment methods have higher fraud correlation.")
-        lines.append("  No other accounts in the current queue share this payment method.")
+    if profile.payment_method_type in ("prepaid_card", "crypto", "virtual_card"):
+        lines.append(f"  Note: {profile.payment_method_type} payments have elevated fraud correlation in platform data.")
 
     if profile.previous_violations > 0:
-        lines.append(f"  Payment history: {profile.previous_violations} chargebacks/disputes on record.")
+        lines.append(f"  Chargeback/dispute history: {profile.previous_violations} incident(s) on record.")
+    else:
+        lines.append("  Chargeback/dispute history: Clean record.")
+
+    velocity = rng.randint(1, 5) if ad_id not in ad_to_rings else rng.randint(3, 12)
+    lines.append(f"  Payment method added to {velocity} advertiser account(s) in the last 90 days.")
+
+    if profile.account_age_days < 30:
+        lines.append(f"  First charge on this method: {profile.account_age_days} days ago.")
 
     return "\n".join(lines)
 
@@ -382,31 +404,41 @@ def _generate_targeting_investigation(
     ad_to_rings: Dict[str, List[str]],
     fraud_rings: List[FraudRing],
 ) -> str:
-    """Generate targeting overlap investigation text."""
+    """Generate targeting overlap investigation text.
+
+    Ring members share an exact targeting fingerprint, presented as raw data.
+    The agent must compare fingerprints across ads to detect collusion.
+    """
     lines = [
-        f"Targeting Overlap Analysis for {ad.ad_id}:",
-        f"  Current targeting: {ad.targeting_summary}",
+        f"Targeting Analysis for {ad.ad_id}:",
+        f"  Declared targeting: {ad.targeting_summary}",
     ]
 
     if ad.ad_id in ad_to_rings:
         ring = next(r for r in fraud_rings if ad.ad_id in r.member_ad_ids)
         if "targeting_overlap" in ring.shared_signals:
-            other_ids = [mid for mid in ring.member_ad_ids if mid != ad.ad_id]
-            lines.append(f"  HIGH OVERLAP detected with: {', '.join(other_ids)}")
-            lines.append(f"  Shared targeting pattern: {ring.shared_signals['targeting_overlap']}")
-            lines.append("  This level of targeting similarity across different advertiser accounts is unusual.")
+            lines.append(f"  Targeting fingerprint: {ring.shared_signals['targeting_overlap']}")
+            overlap_pct = rng.randint(85, 98)
+            lines.append(f"  Audience overlap with platform average for category: {overlap_pct}%")
         else:
-            lines.append("  No significant targeting overlap with other ads in the queue.")
+            fingerprint = f"seg_{rng.randint(10000, 99999)}"
+            lines.append(f"  Targeting fingerprint: {fingerprint}")
+            overlap_pct = rng.randint(20, 55)
+            lines.append(f"  Audience overlap with platform average for category: {overlap_pct}%")
     else:
-        similar = [
-            a for a in all_ads
-            if a.ad_id != ad.ad_id and a.category == ad.category
-        ]
+        fingerprint = f"seg_{rng.randint(10000, 99999)}"
+        lines.append(f"  Targeting fingerprint: {fingerprint}")
+        similar = [a for a in all_ads if a.ad_id != ad.ad_id and a.category == ad.category]
         if similar:
-            lines.append(f"  {len(similar)} other ad(s) in the same category ({ad.category}) found in queue.")
-            lines.append("  Targeting overlap is within normal range for the category.")
+            overlap_pct = rng.randint(30, 65)
+            lines.append(f"  {len(similar)} other ad(s) in same category ({ad.category}) in queue.")
+            lines.append(f"  Audience overlap with platform average for category: {overlap_pct}%")
         else:
-            lines.append("  No significant targeting overlap with other ads in the queue.")
+            overlap_pct = rng.randint(10, 40)
+            lines.append(f"  Audience overlap with platform average for category: {overlap_pct}%")
+
+    geo_regions = rng.randint(1, 8) if ad.ground_truth_label != "legit" else rng.randint(1, 3)
+    lines.append(f"  Geographic regions targeted: {geo_regions}")
 
     return "\n".join(lines)
 
@@ -418,30 +450,36 @@ def _generate_creative_investigation(
     ad_to_rings: Dict[str, List[str]],
     fraud_rings: List[FraudRing],
 ) -> str:
-    """Generate creative similarity investigation text."""
+    """Generate creative similarity investigation text.
+
+    Ring members share a template hash, presented as raw data. The agent
+    must compare hashes across ads to detect reuse.
+    """
     lines = [
-        f"Creative Similarity Analysis for {ad.ad_id}:",
+        f"Creative Analysis for {ad.ad_id}:",
     ]
 
     if ad.ad_id in ad_to_rings:
         ring = next(r for r in fraud_rings if ad.ad_id in r.member_ad_ids)
         if "creative_template" in ring.shared_signals:
-            other_ids = [mid for mid in ring.member_ad_ids if mid != ad.ad_id]
-            lines.append(f"  STRONG SIMILARITY detected with: {', '.join(other_ids)}")
-            lines.append(f"  Shared template hash: {ring.shared_signals['creative_template']}")
-            lines.append("  Ads appear to use the same creative template with minor text variations.")
-            lines.append("  Image assets share identical dimensions and color palettes.")
+            lines.append(f"  Template hash: {ring.shared_signals['creative_template']}")
+            lines.append(f"  Image dimensions: {rng.choice(['1200x628', '1080x1080', '1200x1200'])} px")
+            lines.append(f"  Color palette hash: pal_{rng.randint(100, 999)}")
+            lines.append(f"  Text-to-image ratio: {rng.randint(18, 25)}%")
         else:
-            lines.append("  No significant creative similarity with other ads in the queue.")
+            lines.append(f"  Template hash: tmpl_{rng.randint(10000, 99999)}")
+            lines.append(f"  Image dimensions: {rng.choice(['1200x628', '1080x1080', '1200x1200', '600x600'])} px")
+            lines.append(f"  Text-to-image ratio: {rng.randint(10, 30)}%")
     else:
-        lines.append("  No significant creative similarity with other ads in the queue.")
+        lines.append(f"  Template hash: tmpl_{rng.randint(10000, 99999)}")
+        lines.append(f"  Image dimensions: {rng.choice(['1200x628', '1080x1080'])} px")
+        lines.append(f"  Text-to-image ratio: {rng.randint(8, 22)}%")
 
     if ad.ground_truth_label == "fraud" and ad.fraud_type:
         similarity = rng.uniform(0.3, 0.7)
-        lines.append(f"  Similarity to known scam templates: {similarity:.0%}")
     else:
         similarity = rng.uniform(0.0, 0.15)
-        lines.append(f"  Similarity to known scam templates: {similarity:.0%}")
+    lines.append(f"  Similarity to known scam templates: {similarity:.0%}")
 
     return "\n".join(lines)
 
@@ -507,22 +545,17 @@ def _generate_campaign_investigation(
     ad_to_rings: Dict[str, List[str]],
     fraud_rings: List[FraudRing],
 ) -> str:
-    """Generate campaign structure investigation text."""
+    """Generate campaign structure investigation text.
+
+    Ring members share campaign configurations but no explicit cross-references.
+    The agent must compare objective/bid/budget patterns across ads.
+    """
     lines = [
         f"Campaign Structure Analysis for {ad.ad_id}:",
         campaign.to_investigation_text(profile.account_age_days),
     ]
 
-    if ad.ad_id in ad_to_rings:
-        ring = next(r for r in fraud_rings if ad.ad_id in r.member_ad_ids)
-        other_ids = [mid for mid in ring.member_ad_ids if mid != ad.ad_id]
-        lines.append(
-            f"  MATCH: Identical campaign objective and bid strategy "
-            f"detected across ads: {', '.join(other_ids)}"
-        )
-        lines.append(
-            "  Multiple unrelated advertiser accounts running identical "
-            "campaign configurations is a coordinated fraud indicator."
-        )
+    config_hash = f"cfg_{hash((campaign.objective, campaign.bid_strategy)) & 0xFFFF:04x}"
+    lines.append(f"  Campaign configuration fingerprint: {config_hash}")
 
     return "\n".join(lines)
