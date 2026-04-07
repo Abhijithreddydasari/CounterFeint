@@ -155,29 +155,24 @@ def _extract_json(text: str) -> Dict[str, Any]:
     return json.loads(text)
 
 
-MAX_OBS_CHARS = 1500
-
-
-def _truncate(text: str, limit: int = 600) -> str:
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "... [truncated]"
-
-
 def build_obs_prompt(obs: Any) -> str:
-    """Format an observation into a compact user prompt for the LLM."""
+    """Format an observation into the full user prompt for the LLM.
+
+    No truncation -- each observation is self-contained (includes all
+    accumulated findings and verdict summary), so the agent always has
+    complete information for cross-ad reasoning.
+    """
     parts = [
         f"Queue: {obs.queue_summary}",
-        f"Current Ad: {_truncate(obs.current_ad_info)}",
-        f"Feedback: {_truncate(obs.feedback)}",
+        f"Current Ad: {obs.current_ad_info}",
+        f"Feedback: {obs.feedback}",
         f"Available ads: {', '.join(obs.available_ads)}",
     ]
     if obs.verdict_history_summary and obs.verdict_history_summary != "No verdicts yet.":
-        parts.append(f"Verdicts: {_truncate(obs.verdict_history_summary, 400)}")
+        parts.append(f"Verdicts: {obs.verdict_history_summary}")
     if obs.investigation_findings:
-        parts.append(f"Findings:\n{_truncate(obs.investigation_findings, 600)}")
-    prompt = "\n\n".join(parts)
-    return prompt[:MAX_OBS_CHARS] if len(prompt) > MAX_OBS_CHARS else prompt
+        parts.append(f"Findings:\n{obs.investigation_findings}")
+    return "\n\n".join(parts)
 
 # ---------------------------------------------------------------------------
 # Episode logger (markdown, for debugging — separate from mandatory stdout)
@@ -315,8 +310,11 @@ def run_single_task(
 
             elog.env_feedback(steps_taken, reward, result.done, result.observation.feedback)
 
-            if len(messages) > 10:
-                messages = messages[:1] + messages[-8:]
+            # Each observation is self-contained (all findings + verdict summary),
+            # so we only keep system prompt + last 2 exchanges to stay within
+            # context limits while preserving the agent's reasoning continuity.
+            if len(messages) > 6:
+                messages = messages[:1] + messages[-4:]
 
         state = env.state()
         score = state.grader_score if state.grader_score is not None else 0.0

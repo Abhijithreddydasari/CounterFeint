@@ -42,12 +42,18 @@ class AdFraudEnv(EnvClient[AdReviewAction, AdReviewObservation, AdFraudState]):
     def _parse_result(
         self, payload: Dict[str, Any]
     ) -> StepResult[AdReviewObservation]:
-        """Parse server response into a typed StepResult."""
+        """Parse server response into a typed StepResult.
+
+        OpenEnv serializes as {"observation": {...}, "reward": float, "done": bool}
+        with reward/done at the top level, excluded from the observation dict.
+        """
         obs_data = payload.get("observation", {})
+        reward = payload.get("reward", 0.0) or 0.0
+        done = payload.get("done", False)
 
         observation = AdReviewObservation(
-            done=obs_data.get("done", False),
-            reward=obs_data.get("reward", 0.0),
+            done=done,
+            reward=reward,
             queue_summary=obs_data.get("queue_summary", ""),
             current_ad_info=obs_data.get("current_ad_info", ""),
             investigation_findings=obs_data.get("investigation_findings", ""),
@@ -60,8 +66,8 @@ class AdFraudEnv(EnvClient[AdReviewAction, AdReviewObservation, AdFraudState]):
 
         return StepResult(
             observation=observation,
-            reward=observation.reward,
-            done=observation.done,
+            reward=reward,
+            done=done,
         )
 
     def _parse_state(self, payload: Dict[str, Any]) -> AdFraudState:

@@ -227,20 +227,13 @@ class AdFraudEnvironment(
 
         reward = self._compute_verdict_reward(action.verdict, ground_truth, severity, confidence)
 
-        verdict_correct = (
-            (action.verdict == "reject" and ground_truth == "fraud")
-            or (action.verdict == "approve" and ground_truth == "legit")
-            or (action.verdict == "escalate" and ground_truth == "escalate")
-        )
-
+        pending = [a.ad_id for a in self._episode.ads if a.ad_id not in self._verdicts]
         self._last_feedback = (
             f"Verdict recorded for {ad_id}: {action.verdict} "
             f"(confidence: {confidence:.2f}). "
-            f"{'Correct decision.' if verdict_correct else 'Incorrect decision.'} "
-            f"Reward: {reward:+.2f}"
+            f"{len(pending)} ad(s) remaining in queue."
         )
 
-        pending = [a.ad_id for a in self._episode.ads if a.ad_id not in self._verdicts]
         if pending:
             self._focused_ad_id = pending[0]
 
@@ -275,18 +268,12 @@ class AdFraudEnvironment(
             "correct": is_correct,
         })
 
-        if is_correct:
-            self._last_feedback = (
-                f"Network link recorded: {action.ad_id} <-> {action.linked_ad_id}. "
-                "Correct — these ads are part of the same fraud network. Reward: +0.40"
-            )
-            return 0.4
-        else:
-            self._last_feedback = (
-                f"Network link recorded: {action.ad_id} <-> {action.linked_ad_id}. "
-                "Incorrect — these ads are not in the same fraud network. Reward: -0.20"
-            )
-            return -0.2
+        self._last_feedback = (
+            f"Network link recorded: {action.ad_id} <-> {action.linked_ad_id}. "
+            f"Reason: {action.link_reason or 'not specified'}."
+        )
+
+        return 0.4 if is_correct else -0.25
 
     # ------------------------------------------------------------------
     # Reward computation
@@ -332,6 +319,8 @@ class AdFraudEnvironment(
         grader_score = grade_episode(record)
         self._state.grader_score = grader_score
 
+        reviewed_count = len([v for v in self._verdicts.values() if not v.get("auto_approved")])
+        total_ads = len(self._episode.ads)
         total_correct = sum(
             1 for v in self._verdicts.values()
             if not v.get("auto_approved")
@@ -341,6 +330,18 @@ class AdFraudEnvironment(
                 or (v["verdict"] == "escalate" and v["ground_truth"] == "escalate")
             )
         )
+        false_positives = sum(
+            1 for v in self._verdicts.values()
+            if not v.get("auto_approved")
+            and v["verdict"] == "reject" and v["ground_truth"] == "legit"
+        )
+        false_negatives = sum(
+            1 for v in self._verdicts.values()
+            if not v.get("auto_approved")
+            and v["verdict"] == "approve" and v["ground_truth"] == "fraud"
+        )
+        correct_links = sum(1 for l in self._links if l.get("correct"))
+        incorrect_links = sum(1 for l in self._links if not l.get("correct"))
 
         global _last_grader_result
         _last_grader_result = {
@@ -348,21 +349,29 @@ class AdFraudEnvironment(
             "grader_score": grader_score,
             "episode_id": self._state.episode_id,
             "total_steps": self._state.step_count,
-            "verdicts_rendered": len([
-                v for v in self._verdicts.values() if not v.get("auto_approved")
-            ]),
-            "auto_approved": len([
-                v for v in self._verdicts.values() if v.get("auto_approved")
-            ]),
+            "verdicts_rendered": reviewed_count,
+            "correct_decisions": total_correct,
+            "false_positives": false_positives,
+            "false_negatives": false_negatives,
+            "auto_approved": total_ads - reviewed_count,
             "unreviewed_fraud": unreviewed_fraud,
+            "network_links_correct": correct_links,
+            "network_links_incorrect": incorrect_links,
         }
 
-        self._last_feedback = (
-            f"Episode complete. Grader score: {grader_score:.3f}/1.000\n"
-            f"Verdicts rendered: {len(self._verdicts) - unreviewed_fraud}/{len(self._episode.ads)}\n"
-            f"Auto-approved (unreviewed): {unreviewed_fraud} fraud ad(s) missed\n"
-            f"Correct decisions: {total_correct}/{len(self._verdicts)}"
-        )
+        feedback_lines = [
+            f"Episode complete. Grader score: {grader_score:.3f}/1.000",
+            f"Verdicts rendered: {reviewed_count}/{total_ads}",
+            f"Correct decisions: {total_correct}/{reviewed_count}",
+            f"False positives (legit rejected): {false_positives}",
+            f"False negatives (fraud approved): {false_negatives}",
+            f"Unreviewed ads auto-approved: {unreviewed_fraud}",
+        ]
+        if self._links:
+            feedback_lines.append(
+                f"Network links: {correct_links} correct, {incorrect_links} incorrect"
+            )
+        self._last_feedback = "\n".join(feedback_lines)
 
         return 0.0
 
@@ -502,13 +511,28 @@ class AdFraudEnvironment(
                 if finding:
                     investigation_findings += f"\n[{ad_id} / {target}]\n{finding}\n"
 
-        verdict_lines = []
-        for ad_id, v in self._verdicts.items():
-            if not v.get("auto_approved"):
-                verdict_lines.append(
-                    f"  {ad_id}: {v['verdict']} (confidence: {v['confidence']:.2f})"
-                )
-        verdict_history_summary = "\n".join(verdict_lines) if verdict_lines else "No verdicts yet."
+        manual_verdicts = {
+            ad_id: v for ad_id, v in self._verdicts.items()
+            if not v.get("auto_approved")
+        }
+        if manual_verdicts:
+            counts = {"approve": 0, "reject": 0, "escalate": 0}
+            by_decision = {"approve": [], "reject": [], "escalate": []}
+            for ad_id, v in manual_verdicts.items():
+                counts[v["verdict"]] = counts.get(v["verdict"], 0) + 1
+                by_decision[v["verdict"]].append(ad_id)
+            summary_parts = [f"{c} {k}" for k, c in counts.items() if c > 0]
+            verdict_lines = [
+                f"Reviewed {len(manual_verdicts)} ad(s): {', '.join(summary_parts)}."
+            ]
+            for decision in ("reject", "approve", "escalate"):
+                if by_decision[decision]:
+                    verdict_lines.append(
+                        f"  {decision}: {', '.join(by_decision[decision])}"
+                    )
+            verdict_history_summary = "\n".join(verdict_lines)
+        else:
+            verdict_history_summary = "No verdicts yet."
 
         available_ads = [a.ad_id for a in pending]
 
