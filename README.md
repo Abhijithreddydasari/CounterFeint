@@ -1,6 +1,6 @@
 ---
 title: Ad Fraud Investigation Environment
-emoji: 🕵️
+emoji: "\U0001F575\uFE0F"
 colorFrom: red
 colorTo: yellow
 sdk: docker
@@ -75,29 +75,29 @@ Each episode is a review session. The agent receives a queue of ads and must pro
 
 ```
 reset(task_id, seed)
-  │
-  ▼
-┌──────────────────────────────────┐
-│  Observe queue + first ad info   │◄──────────────────────┐
-└──────────────┬───────────────────┘                       │
-               │                                           │
-               ▼                                           │
-        ┌─────────────┐     ┌──────────────────┐           │
-        │ investigate  │────►│ Reveal one signal │──────────┘
-        └─────────────┘     │ (costs 1 budget)  │
-               │            └──────────────────┘
-               ▼
-        ┌─────────────┐     ┌──────────────────┐
-        │   verdict    │────►│ approve / reject  │──────────┐
-        └─────────────┘     │  / escalate       │          │
-               │            └──────────────────┘           │
-               ▼                                           │
-        ┌──────────────┐    ┌──────────────────┐           │
-        │ link_accounts│────►│ Flag fraud ring   │──────────┘
-        └──────────────┘    │ (Task 3 only)     │
-               │            └──────────────────┘
-               ▼
-        Budget exhausted or all ads reviewed → episode ends
+  |
+  v
++----------------------------------+<----------------------+
+|  Observe queue + first ad info   |                       |
++------------------+---------------+                       |
+                   |                                       |
+                   v                                       |
+        +-------------+     +------------------+           |
+        | investigate |---->| Reveal one signal |----------+
+        +-------------+     | (costs 1 budget)  |
+               |            +------------------+
+               v
+        +-------------+     +------------------+
+        |   verdict   |---->| approve / reject  |----------+
+        +-------------+     |  / escalate       |          |
+               |            +------------------+           |
+               v                                           |
+        +--------------+    +------------------+           |
+        | link_accounts|---->| Flag fraud ring   |----------+
+        +--------------+    | (Task 3 only)     |
+               |            +------------------+
+               v
+        Budget exhausted or all ads reviewed -> episode ends
 ```
 
 ### Tasks
@@ -106,17 +106,17 @@ Three tasks with increasing difficulty test different capabilities:
 
 | Task | Name | Ads | Budget | Composition | Challenge |
 |---|---|---:|---:|---|---|
-| 1 | Basic Ad Triage | 5 | 25 | 2 legit, 3 obvious fraud | Learn the investigate → verdict loop |
+| 1 | Basic Ad Triage | 5 | 25 | 2 legit, 3 obvious fraud | Learn the investigate -> verdict loop |
 | 2 | Sophisticated Fraud | 12 | 30 | 5 legit, 5 sophisticated scams, 2 gray-area | Triage under budget pressure (~2.5 actions/ad) |
 | 3 | Fraud Network Detection | 20 | 35 | 6 legit, 10 fraud (3 hidden rings), 4 gray-area | Cross-ad reasoning to detect coordinated networks (~1.75 actions/ad) |
 
-Task 3 introduces **fraud rings** — clusters of 3-5 ads controlled by the same actor, using varied topologies (cliques, chains, hub-and-spoke). Individual ring members look borderline; the fraud signal is only visible by cross-referencing investigation data across ads (shared payment IDs, matching template hashes, overlapping targeting fingerprints).
+Task 3 introduces **fraud rings** - clusters of 3-5 ads controlled by the same actor, using varied topologies (cliques, chains, hub-and-spoke). Individual ring members look borderline; the fraud signal is only visible by cross-referencing investigation data across ads (shared payment IDs, matching template hashes, overlapping targeting fingerprints).
 
 ### Action Space
 
 Actions are JSON objects. Three types:
 
-**`investigate`** — spend one budget point to reveal a signal about an ad.
+**`investigate`** - spend one budget point to reveal a signal about an ad.
 
 ```json
 {
@@ -137,7 +137,7 @@ Each ad has six investigation dimensions:
 | `creative_similarity` | Template hash, image dimensions, scam template similarity score |
 | `campaign_structure` | Objective, bid strategy, budget/age ratio, placement distribution |
 
-**`verdict`** — render a final decision on an ad.
+**`verdict`** - render a final decision on an ad.
 
 ```json
 {
@@ -148,9 +148,9 @@ Each ad has six investigation dimensions:
 }
 ```
 
-`verdict` options: `approve`, `reject`, `escalate`. `confidence`: 0.0–1.0.
+`verdict` options: `approve`, `reject`, `escalate`. `confidence`: 0.0-1.0.
 
-**`link_accounts`** — flag two ads as part of the same fraud network (Task 3).
+**`link_accounts`** - flag two ads as part of the same fraud network (Task 3).
 
 ```json
 {
@@ -182,20 +182,20 @@ Observations are text-heavy by design so LLM agents can reason naturally:
 | Action | Reward | Rationale |
 |---|---:|---|
 | Investigation | -0.02 | Simulates time/latency cost |
-| Correct rejection (fraud → reject) | +0.30 to +0.40 | Scaled by fraud severity |
-| Correct approval (legit → approve) | +0.10 | Revenue preserved |
+| Correct rejection (fraud -> reject) | +0.30 to +0.40 | Scaled by fraud severity |
+| Correct approval (legit -> approve) | +0.10 | Revenue preserved |
 | Correct escalation | +0.15 | Appropriate caution |
-| False positive (legit → reject) | -0.35 | Lost advertiser revenue |
-| False negative (fraud → approve) | -0.50 | Worst outcome — fraud goes live |
+| False positive (legit -> reject) | -0.35 | Lost advertiser revenue |
+| False negative (fraud -> approve) | -0.50 | Worst outcome - fraud goes live |
 | Escalate (when wrong) | -0.05 | Human reviewer cost |
 | Correct network link | +0.40 | High-value coordinated fraud detection |
 | Incorrect network link | -0.25 | False accusation cost |
 
-Unreviewed ads are auto-approved at episode end — missed fraud incurs the full -0.50 false-negative penalty.
+Unreviewed ads are auto-approved at episode end - missed fraud incurs the full -0.50 false-negative penalty.
 
 ## Grading & Scoring
 
-Each task has a dedicated grader that produces a normalized **0.0–1.0 score**. Raw reward is normalized between theoretical worst-case (every decision wrong + full budget wasted) and best-case (every decision correct + efficient budget use).
+Each task has a dedicated grader that produces a normalized **0.0-1.0 score**. Raw reward is normalized between theoretical worst-case (every decision wrong + full budget wasted) and best-case (every decision correct + efficient budget use).
 
 | Component | Task 1 | Task 2 | Task 3 |
 |---|:---:|:---:|:---:|
@@ -205,11 +205,11 @@ Each task has a dedicated grader that produces a normalized **0.0–1.0 score**.
 | Network detection (edge coverage) | - | - | Yes |
 | Investigation coverage bonus | - | - | Yes |
 
-**Calibration bonus** rewards agents whose stated confidence correlates with actual accuracy — high confidence on correct verdicts and low confidence on uncertain ones.
+**Calibration bonus** rewards agents whose stated confidence correlates with actual accuracy - high confidence on correct verdicts and low confidence on uncertain ones.
 
 **Network detection** uses edge coverage: what fraction of ground-truth fraud ring connections did the agent discover via `link_accounts`?
 
-**Coverage bonus** rewards breadth over depth — agents that review more ads (rather than deep-diving a single one) score higher on Task 3.
+**Coverage bonus** rewards breadth over depth - agents that review more ads (rather than deep-diving a single one) score higher on Task 3.
 
 ## Baseline Scores
 
@@ -221,39 +221,39 @@ Generated with `seed=42` using `meta-llama/Llama-3.1-8B-Instruct`. Reproducible 
 | Task 2 (Medium) | 0.882 | 23 | 12/12 |
 | Task 3 (Hard) | 0.415 | 35 | 20/20 |
 
-The sharp drop on Task 3 reflects the difficulty of cross-ad reasoning under tight budget — the baseline agent investigates and renders verdicts well but struggles to detect coordinated fraud rings.
+The sharp drop on Task 3 reflects the difficulty of cross-ad reasoning under tight budget - the baseline agent investigates and renders verdicts well but struggles to detect coordinated fraud rings.
 
 ## Project Structure
 
 ```
 ad_fraud_env/
-├── __init__.py              # Package exports
-├── client.py                # WebSocket client (extends EnvClient)
-├── models.py                # Action, Observation, State types
-├── inference.py             # Baseline LLM agent with mandatory stdout logging
-├── openenv.yaml             # OpenEnv manifest
-├── pyproject.toml           # Dependencies and package config
-├── Dockerfile               # Multi-stage Docker build
-├── baseline_scores.json     # Cached baseline results
-├── data/
-│   ├── ad_generator.py      # Episode generation, task configs, campaign profiles
-│   ├── advertiser_profiles.py  # Synthetic advertiser history
-│   ├── fraud_patterns.py    # Fraud + legit ad templates (easy/medium/hard)
-│   ├── landing_pages.py     # Simulated landing page investigation data
-│   └── network_generator.py # Fraud ring topologies via networkx
-├── graders/
-│   ├── base_grader.py       # Shared normalization and reward logic
-│   ├── task1_grader.py      # Verdict accuracy only
-│   ├── task2_grader.py      # + calibration bonus
-│   └── task3_grader.py      # + network detection + coverage bonus
-├── server/
-│   ├── app.py               # FastAPI app with /tasks, /baseline, /grader endpoints
-│   ├── environment.py       # Core environment (reset/step/state)
-│   └── requirements.txt     # Server dependencies
-└── tests/
-    ├── test_data_generation.py  # Determinism, cross-ref checks, decoy validation
-    ├── test_environment.py      # Step logic, state tracking, anti-exploit
-    └── test_graders.py          # Score ranges, calibration, network scoring
++-- __init__.py              # Package exports
++-- client.py                # WebSocket client (extends EnvClient)
++-- models.py                # Action, Observation, State types
++-- inference.py             # Baseline LLM agent with mandatory stdout logging
++-- openenv.yaml             # OpenEnv manifest
++-- pyproject.toml           # Dependencies and package config
++-- Dockerfile               # Multi-stage Docker build
++-- baseline_scores.json     # Cached baseline results
++-- data/
+|   +-- ad_generator.py      # Episode generation, task configs, campaign profiles
+|   +-- advertiser_profiles.py  # Synthetic advertiser history
+|   +-- fraud_patterns.py    # Fraud + legit ad templates (easy/medium/hard)
+|   +-- landing_pages.py     # Simulated landing page investigation data
+|   +-- network_generator.py # Fraud ring topologies via networkx
++-- graders/
+|   +-- base_grader.py       # Shared normalization and reward logic
+|   +-- task1_grader.py      # Verdict accuracy only
+|   +-- task2_grader.py      # + calibration bonus
+|   +-- task3_grader.py      # + network detection + coverage bonus
++-- server/
+|   +-- app.py               # FastAPI app with /tasks, /baseline, /grader endpoints
+|   +-- environment.py       # Core environment (reset/step/state)
+|   +-- requirements.txt     # Server dependencies
++-- tests/
+    +-- test_data_generation.py  # Determinism, cross-ref checks, decoy validation
+    +-- test_environment.py      # Step logic, state tracking, anti-exploit
+    +-- test_graders.py          # Score ranges, calibration, network scoring
 ```
 
 ## API Endpoints

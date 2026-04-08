@@ -6,8 +6,6 @@ MANDATORY
     API_BASE_URL   The API endpoint for the LLM.
     MODEL_NAME     The model identifier to use for inference.
     HF_TOKEN       Your Hugging Face / API key.
-    LOCAL_IMAGE_NAME The name of the local image to use for the environment if you are using from_docker_image()
-
 - The inference script must be named `inference.py` and placed in the root directory of the project
 - Participants must use OpenAI Client for all LLM calls using above variables
 
@@ -44,11 +42,10 @@ except ImportError:
 from dotenv import load_dotenv
 load_dotenv()
 
-API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-MODEL_NAME = os.getenv("MODEL_NAME") or "meta-llama/Llama-3.1-8B-Instruct"
-IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("IMAGE_NAME")
-ENV_URL = os.getenv("AD_FRAUD_ENV_URL", "http://localhost:8000")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
+HF_TOKEN = os.getenv("HF_TOKEN")
+ENV_URL = os.getenv("AD_FRAUD_ENV_URL", "https://QuantumTransformer-AdArena.hf.space")
 BENCHMARK = "ad_fraud_env"
 TEMPERATURE = 0.1
 MAX_TOKENS = 256
@@ -289,14 +286,10 @@ class EpisodeLogger:
 def run_single_task(
     task_id: str,
     seed: int = 42,
-    env_base_url: str = "http://localhost:8000",
+    env_base_url: str = "https://QuantumTransformer-AdArena.hf.space",
 ) -> Dict[str, Any]:
     """Run the baseline agent on a single task with mandatory [START]/[STEP]/[END] logging."""
-    base_url = os.getenv("API_BASE_URL") or API_BASE_URL
-    api_key = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or API_KEY
-    model = os.getenv("MODEL_NAME") or MODEL_NAME
-
-    client = OpenAI(base_url=base_url, api_key=api_key, timeout=60.0)
+    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN, timeout=60.0)
     env = AdFraudEnv(base_url=env_base_url).sync()
     elog = EpisodeLogger(task_id, LOG_DIR)
 
@@ -308,7 +301,7 @@ def run_single_task(
     score = 0.0
     success = False
 
-    log_start(task=task_id, env=BENCHMARK, model=model)
+    log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
 
     try:
         env.connect()
@@ -327,7 +320,7 @@ def run_single_task(
 
             try:
                 completion = client.chat.completions.create(
-                    model=model,
+                    model=MODEL_NAME,
                     messages=messages,
                     temperature=TEMPERATURE,
                     max_tokens=MAX_TOKENS,
@@ -406,15 +399,14 @@ def run_single_task(
         try:
             env.close()
         except Exception as e:
-            print(f"[DEBUG] env.close() error: {e}", flush=True)
+            print(f"[DEBUG] env.close() error: {e}", file=sys.stderr, flush=True)
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 
 def run_baseline(
-    env_base_url: str = "http://localhost:8000",
+    env_base_url: str = "https://QuantumTransformer-AdArena.hf.space",
 ) -> Dict[str, Any]:
     """Run baseline inference on all 3 tasks."""
-    model = os.getenv("MODEL_NAME") or MODEL_NAME
     results: Dict[str, Any] = {}
     for task_id in ["task_1", "task_2", "task_3"]:
         logger.info("Running baseline for %s...", task_id)
@@ -428,30 +420,26 @@ def run_baseline(
             logger.error("  %s failed: %s", task_id, e)
             results[task_id] = {"task_id": task_id, "score": 0.0, "error": str(e)}
 
-    return {"baseline_model": model, "seed": 42, "tasks": results}
+    return {"baseline_model": MODEL_NAME, "seed": 42, "tasks": results}
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-    if not API_KEY:
-        print("Error: HF_TOKEN (or API_KEY) environment variable is required.", file=sys.stderr)
+    if not HF_TOKEN:
+        print("Error: HF_TOKEN environment variable is required.", file=sys.stderr)
         sys.exit(1)
-    if not MODEL_NAME:
-        print("Error: MODEL_NAME environment variable is required.", file=sys.stderr)
-        sys.exit(1)
+    env_base_url = os.getenv("AD_FRAUD_ENV_URL", "https://QuantumTransformer-AdArena.hf.space")
 
-    env_base_url = os.getenv("AD_FRAUD_ENV_URL", "http://localhost:8000")
-
-    print(f"Running baseline inference against {env_base_url} with model {MODEL_NAME}...")
+    print(f"Running baseline inference against {env_base_url} with model {MODEL_NAME}...", file=sys.stderr)
     scores = run_baseline(env_base_url=env_base_url)
 
     output_path = Path(__file__).resolve().parent / "baseline_scores.json"
     with open(output_path, "w") as f:
         json.dump(scores, f, indent=2)
 
-    print(f"\nBaseline scores saved to {output_path}")
-    print(json.dumps(scores, indent=2))
+    print(f"\nBaseline scores saved to {output_path}", file=sys.stderr)
+    print(json.dumps(scores, indent=2), file=sys.stderr)
 
 
 if __name__ == "__main__":
