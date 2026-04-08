@@ -3,6 +3,8 @@ FastAPI application for the Ad Fraud Investigation Environment.
 
 Creates the OpenEnv server via create_app() and registers custom HTTP
 endpoints required by the hackathon: /tasks, /baseline, /grader.
+
+Gradio is disabled (ENABLE_WEB_INTERFACE=false); the HTML UI lives at /investigate.
 """
 
 from __future__ import annotations
@@ -21,8 +23,12 @@ except ImportError:
     from models import AdReviewAction, AdReviewObservation
 
 from .environment import AdFraudEnvironment, get_last_grader_result
+from .investigate_ui import register_investigate_ui
 
 logger = logging.getLogger(__name__)
+
+# Do not mount OpenEnv's Gradio stack (single FastAPI process on port 8000).
+os.environ.setdefault("ENABLE_WEB_INTERFACE", "false")
 
 app = create_app(
     AdFraudEnvironment,
@@ -30,6 +36,8 @@ app = create_app(
     AdReviewObservation,
     env_name="ad_fraud_env",
 )
+
+register_investigate_ui(app)
 
 
 # ------------------------------------------------------------------
@@ -97,7 +105,7 @@ async def grader() -> Dict[str, Any]:
     result = get_last_grader_result()
     if not result:
         return {
-            "error": "No completed episode. Run an episode via WebSocket first.",
+            "error": "No completed episode. Run an episode via WebSocket or the /investigate UI.",
             "grader_score": None,
         }
     return result
