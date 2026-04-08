@@ -6,7 +6,6 @@ colorTo: yellow
 sdk: docker
 pinned: false
 app_port: 8000
-base_path: /web
 tags:
   - openenv
   - ad-fraud
@@ -266,7 +265,7 @@ ad_fraud_env/
 | `/tasks` | GET | Task list with configs and action schema |
 | `/baseline` | GET | Baseline scores (cached or live) |
 | `/grader` | GET | Last episode's grader result |
-| `/web` | GET | Auto-generated Gradio UI |
+| `/investigate` | GET | HTML investigation dashboard (also `/` redirects here) |
 
 ## License
 
