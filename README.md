@@ -248,6 +248,9 @@ ad_fraud_env/
 +-- server/
 |   +-- app.py               # FastAPI app with /tasks, /baseline, /grader endpoints
 |   +-- environment.py       # Core environment (reset/step/state)
+|   +-- investigate_ui.py    # HTML dashboard routes (/investigate, /web redirect)
+|   +-- static/
+|       +-- investigate_hq.html  # Interactive investigation dashboard
 |   +-- requirements.txt     # Server dependencies
 +-- tests/
     +-- test_data_generation.py  # Determinism, cross-ref checks, decoy validation
