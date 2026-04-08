@@ -292,6 +292,26 @@
     footer a { color: var(--accent); text-decoration: none; }
     .hidden { display: none !important; }
     .feedback-strip { padding: 12px 16px; border-radius: var(--radius-sm); border: 1px solid var(--border); margin-bottom: 16px; font-size: 0.88rem; }
+    .quickstart {
+      background: linear-gradient(135deg, rgba(99,102,241,0.08), rgba(6,182,212,0.06));
+      border: 1px solid rgba(99,102,241,0.25);
+      border-radius: var(--radius);
+      padding: 18px 22px;
+      margin-bottom: 20px;
+      font-size: 0.82rem;
+      line-height: 1.65;
+      color: var(--text-dim);
+    }
+    .quickstart summary {
+      cursor: pointer;
+      font-weight: 700;
+      font-size: 0.85rem;
+      color: var(--text);
+      letter-spacing: 0.3px;
+    }
+    .quickstart ol { margin: 10px 0 0 18px; padding: 0; }
+    .quickstart li { margin-bottom: 4px; }
+    .quickstart .qs-hint { color: var(--amber); font-weight: 600; }
   </style>
 </head>
 <body>
@@ -309,6 +329,17 @@
       <span class="badge badge-green"><span class="pulse"></span> Live</span>
     </div>
   </header>
+
+  <details class="quickstart" open>
+    <summary>Getting started</summary>
+    <p style="margin:8px 0 4px">Investigate a queue of ads for fraud signals, gather evidence, and render verdicts under a limited action budget.</p>
+    <ol>
+      <li>Choose a <strong>task</strong> from the dropdown and click <strong>Reset environment</strong>.</li>
+      <li>Select an <strong>action type</strong> (investigate / verdict / skip / link_ads) and the target <strong>ad ID</strong>, then click <strong>Execute action</strong>.</li>
+      <li>Repeat: uncover evidence, link related ads, and submit verdicts until the budget runs out or all ads are reviewed.</li>
+      <li class="qs-hint">Click <strong>Get grader score</strong> to see the episode score.</li>
+    </ol>
+  </details>
 
   <div class="stats-row">
     <div class="stat-card"><div class="stat-label">Total ads</div><div class="stat-value" id="st-total">-</div></div>

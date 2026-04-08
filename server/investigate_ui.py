@@ -45,6 +45,10 @@ def register_investigate_ui(app: FastAPI) -> None:
     async def root_to_investigate() -> RedirectResponse:
         return RedirectResponse(url="/investigate", status_code=302)
 
+    @app.get("/web", include_in_schema=False)
+    async def web_to_investigate() -> RedirectResponse:
+        return RedirectResponse(url="/investigate", status_code=302)
+
     @app.get("/investigate", include_in_schema=False)
     async def investigate_page() -> FileResponse:
         path = static_dir / "investigate_hq.html"
