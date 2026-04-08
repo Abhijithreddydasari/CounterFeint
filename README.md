@@ -6,7 +6,6 @@ colorTo: yellow
 sdk: docker
 pinned: false
 app_port: 8000
-base_path: /web
 tags:
   - openenv
   - ad-fraud
@@ -249,6 +248,9 @@ ad_fraud_env/
 +-- server/
 |   +-- app.py               # FastAPI app with /tasks, /baseline, /grader endpoints
 |   +-- environment.py       # Core environment (reset/step/state)
+|   +-- investigate_ui.py    # HTML dashboard routes (/investigate, /web redirect)
+|   +-- static/
+|       +-- investigate_hq.html  # Interactive investigation dashboard
 |   +-- requirements.txt     # Server dependencies
 |   +-- investigate_ui.py    # HTML dashboard routes (/investigate, /web redirect)
 |   +-- static/
@@ -269,7 +271,7 @@ ad_fraud_env/
 | `/tasks` | GET | Task list with configs and action schema |
 | `/baseline` | GET | Baseline scores (cached or live) |
 | `/grader` | GET | Last episode's grader result |
-| `/web` | GET | Auto-generated Gradio UI |
+| `/investigate` | GET | HTML investigation dashboard (also `/` redirects here) |
 
 ## License
 

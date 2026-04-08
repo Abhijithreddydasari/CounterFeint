@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ad Fraud Investigation — OpenEnv</title>
+  <meta name="description" content="Interactive ad fraud review RL environment — OpenEnv compatible." />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --bg: #0b0e17;
+      --surface: rgba(255,255,255,0.04);
+      --surface-hover: rgba(255,255,255,0.08);
+      --border: rgba(255,255,255,0.08);
+      --text: #e2e8f0;
+      --text-dim: #94a3b8;
+      --accent: #6366f1;
+      --accent-glow: rgba(99,102,241,0.35);
+      --green: #22c55e;
+      --green-glow: rgba(34,197,94,0.25);
+      --amber: #f59e0b;
+      --amber-glow: rgba(245,158,11,0.25);
+      --red: #ef4444;
+      --red-glow: rgba(239,68,68,0.2);
+      --cyan: #06b6d4;
+      --radius: 16px;
+      --radius-sm: 10px;
+    }
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+    body::before, body::after {
+      content: '';
+      position: fixed;
+      border-radius: 50%;
+      filter: blur(120px);
+      opacity: 0.28;
+      pointer-events: none;
+      z-index: 0;
+    }
+    body::before {
+      width: 600px; height: 600px;
+      background: radial-gradient(circle, var(--accent) 0%, transparent 70%);
+      top: -200px; left: -100px;
+      animation: float1 20s ease-in-out infinite;
+    }
+    body::after {
+      width: 500px; height: 500px;
+      background: radial-gradient(circle, var(--cyan) 0%, transparent 70%);
+      bottom: -150px; right: -100px;
+      animation: float2 25s ease-in-out infinite;
+    }
+    @keyframes float1 { 0%,100%{transform:translate(0,0)} 50%{transform:translate(80px,60px)} }
+    @keyframes float2 { 0%,100%{transform:translate(0,0)} 50%{transform:translate(-60px,-80px)} }
+    .container { max-width: 1320px; margin: 0 auto; padding: 24px 20px; position: relative; z-index: 1; }
+    header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; flex-wrap: wrap; gap: 16px; }
+    .logo { display: flex; align-items: center; gap: 14px; }
+    .logo-icon {
+      width: 48px; height: 48px;
+      background: linear-gradient(135deg, var(--accent), var(--cyan));
+      border-radius: 14px;
+      display: grid; place-items: center;
+      font-size: 22px;
+      box-shadow: 0 4px 20px var(--accent-glow);
+    }
+    .logo h1 {
+      font-size: 1.28rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, #fff 30%, var(--cyan));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .logo span {
+      display: block;
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      -webkit-text-fill-color: var(--text-dim);
+    }
+    .header-badges { display: flex; gap: 8px; flex-wrap: wrap; }
+    .badge {
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+    .badge-accent { background: var(--accent-glow); color: #a5b4fc; border: 1px solid rgba(99,102,241,0.3); }
+    .badge-green { background: var(--green-glow); color: #86efac; border: 1px solid rgba(34,197,94,0.3); display: flex; align-items: center; gap: 6px; }
+    .pulse { width: 8px; height: 8px; background: var(--green); border-radius: 50%; animation: pulse 2s ease-in-out infinite; }
+    @keyframes pulse { 0%,100%{box-shadow:0 0 0 0 var(--green-glow)} 50%{box-shadow:0 0 0 8px transparent} }
+    .stats-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 14px;
+      margin-bottom: 22px;
+    }
+    .stat-card {
+      background: var(--surface);
+      backdrop-filter: blur(20px);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 18px 20px;
+      transition: transform 0.25s ease;
+    }
+    .stat-card:hover { transform: translateY(-2px); background: var(--surface-hover); }
+    .stat-label { font-size: 0.68rem; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin-bottom: 6px; }
+    .stat-value { font-size: 1.65rem; font-weight: 800; }
+    .stat-value.accent { color: var(--accent); }
+    .stat-value.green { color: var(--green); }
+    .stat-value.amber { color: var(--amber); }
+    .stat-value.cyan { color: var(--cyan); }
+    .stat-value.red { color: var(--red); }
+    .stat-value.pink { color: #f472b6; }
+    .cum-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 20px;
+      margin-bottom: 22px;
+    }
+    .cum-panel h3 { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin-bottom: 10px; }
+    .cum-panel svg { width: 100%; max-width: 640px; height: 120px; display: block; }
+    .control-bar { display: flex; gap: 10px; margin-bottom: 24px; flex-wrap: wrap; align-items: center; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 12px 22px;
+      border: none;
+      border-radius: var(--radius-sm);
+      font-family: inherit;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.25s ease;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), #818cf8);
+      color: #fff;
+      box-shadow: 0 4px 20px var(--accent-glow);
+    }
+    .btn-success { background: linear-gradient(135deg, #059669, var(--green)); color: #fff; box-shadow: 0 4px 20px var(--green-glow); }
+    .btn-amber { background: linear-gradient(135deg, #d97706, var(--amber)); color: #fff; box-shadow: 0 4px 20px var(--amber-glow); }
+    .btn-ghost { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .main-grid { display: grid; grid-template-columns: 1fr 400px; gap: 20px; }
+    @media (max-width: 1024px) { .main-grid { grid-template-columns: 1fr; } }
+    .panel {
+      background: var(--surface);
+      backdrop-filter: blur(20px);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      margin-bottom: 18px;
+    }
+    .panel-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .panel-title { font-size: 0.9rem; font-weight: 700; }
+    .panel-body { padding: 18px 20px; }
+    .ad-queue { display: flex; flex-wrap: wrap; gap: 10px; }
+    .ad-chip {
+      padding: 10px 16px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--text-dim);
+      display: inline-flex; align-items: center; gap: 8px;
+    }
+    .ad-chip.focus { border-color: var(--amber); color: var(--cyan); box-shadow: 0 0 0 1px var(--amber-glow); }
+    .ad-chip.approved { border-color: var(--green); color: var(--green); }
+    .ad-chip.rejected { border-color: var(--red); color: var(--red); }
+    .ad-chip.escalated { border-color: var(--cyan); color: var(--cyan); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .profile-meta { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 14px; }
+    .pm-label { font-size: 0.65rem; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.8px; }
+    .pm-value { font-size: 0.95rem; font-weight: 600; margin-top: 4px; }
+    .ad-copy {
+      background: rgba(0,0,0,0.25);
+      border-left: 3px solid var(--cyan);
+      padding: 14px 18px;
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      font-style: italic;
+      color: var(--text-dim);
+      line-height: 1.55;
+      font-size: 0.88rem;
+    }
+    .inv-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    @media (max-width: 768px) { .inv-grid { grid-template-columns: repeat(2, 1fr); } }
+    .inv-card {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 12px 14px;
+      min-height: 88px;
+      position: relative;
+      overflow: hidden;
+      background: rgba(0,0,0,0.15);
+    }
+    .inv-card.revealed { border-color: rgba(99,102,241,0.45); }
+    .inv-card.locked .inv-inner { filter: blur(4px); opacity: 0.2; }
+    .inv-card.locked::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: repeating-linear-gradient(-45deg, transparent, transparent 5px, rgba(255,255,255,0.04) 5px, rgba(255,255,255,0.04) 10px);
+      pointer-events: none;
+    }
+    .inv-label { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 700; color: var(--accent); margin-bottom: 6px; }
+    .inv-card.locked .inv-label { color: var(--text-dim); }
+    .inv-content { font-size: 0.75rem; line-height: 1.4; color: var(--text); }
+    .lock-icon { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); font-size: 1.25rem; z-index: 2; }
+    .action-form { display: flex; flex-direction: column; gap: 14px; }
+    .form-group label {
+      display: block;
+      font-size: 0.68rem; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.8px; color: var(--text-dim); margin-bottom: 6px;
+    }
+    .form-group select, .form-group input, .form-group textarea {
+      width: 100%;
+      padding: 11px 14px;
+      background: rgba(15, 23, 42, 0.95);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: #f1f5f9;
+      font-family: inherit;
+      font-size: 0.85rem;
+      outline: none;
+    }
+    .control-bar select.control-select {
+      padding: 11px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 0.85rem;
+    }
+    .control-bar select.control-select,
+    .form-group select {
+      background-color: #0f172a;
+      color: #f1f5f9;
+      border: 1px solid rgba(148, 163, 184, 0.45);
+    }
+    select.control-select option,
+    .form-group select option {
+      background-color: #0f172a;
+      color: #f1f5f9;
+    }
+    .form-group textarea { min-height: 120px; resize: vertical; line-height: 1.5; }
+    .form-group select:focus, .form-group input:focus, .form-group textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+    .log-area {
+      max-height: 220px;
+      overflow-y: auto;
+      font-family: ui-monospace, monospace;
+      font-size: 0.72rem;
+    }
+    .log-entry { padding: 8px 10px; border-radius: 6px; margin-bottom: 4px; background: rgba(0,0,0,0.2); color: var(--text-dim); }
+    .log-entry.ok { color: var(--green); }
+    .log-entry.bad { color: var(--red); }
+    .verdict-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      margin-bottom: 6px;
+      font-size: 0.82rem;
+    }
+    .v-badge { padding: 3px 10px; border-radius: 999px; font-size: 0.62rem; font-weight: 700; text-transform: uppercase; }
+    .v-badge.approve { background: var(--green-glow); color: var(--green); }
+    .v-badge.reject { background: var(--red-glow); color: var(--red); }
+    .v-badge.escalate { background: var(--accent-glow); color: #a5b4fc; }
+    .toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 1000; display: flex; flex-direction: column; gap: 8px; }
+    .toast {
+      padding: 14px 20px;
+      border-radius: var(--radius-sm);
+      font-size: 0.82rem;
+      max-width: 360px;
+      animation: slideIn 0.3s ease;
+    }
+    .toast.success { background: rgba(34,197,94,0.2); border: 1px solid rgba(34,197,94,0.35); color: #86efac; }
+    .toast.error { background: rgba(239,68,68,0.2); border: 1px solid rgba(239,68,68,0.35); color: #fca5a5; }
+    .toast.info { background: rgba(6,182,212,0.15); border: 1px solid rgba(6,182,212,0.35); color: #67e8f9; }
+    @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    footer { margin-top: 36px; text-align: center; padding: 20px; font-size: 0.72rem; color: var(--text-dim); border-top: 1px solid var(--border); }
+    footer a { color: var(--accent); text-decoration: none; }
+    .hidden { display: none !important; }
+    .feedback-strip { padding: 12px 16px; border-radius: var(--radius-sm); border: 1px solid var(--border); margin-bottom: 16px; font-size: 0.88rem; }
+    .quickstart {
+      background: linear-gradient(135deg, rgba(99,102,241,0.08), rgba(6,182,212,0.06));
+      border: 1px solid rgba(99,102,241,0.25);
+      border-radius: var(--radius);
+      padding: 18px 22px;
+      margin-bottom: 20px;
+      font-size: 0.82rem;
+      line-height: 1.65;
+      color: var(--text-dim);
+    }
+    .quickstart summary {
+      cursor: pointer;
+      font-weight: 700;
+      font-size: 0.85rem;
+      color: var(--text);
+      letter-spacing: 0.3px;
+    }
+    .quickstart ol { margin: 10px 0 0 18px; padding: 0; }
+    .quickstart li { margin-bottom: 4px; }
+    .quickstart .qs-hint { color: var(--amber); font-weight: 600; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <div class="logo">
+      <div class="logo-icon">&#128269;</div>
+      <div>
+        <h1>Ad Fraud Investigation</h1>
+        <span>OpenEnv interactive environment</span>
+      </div>
+    </div>
+    <div class="header-badges">
+      <span class="badge badge-accent">OpenEnv</span>
+      <span class="badge badge-green"><span class="pulse"></span> Live</span>
+    </div>
+  </header>
+
+  <details class="quickstart" open>
+    <summary>Getting started</summary>
+    <p style="margin:8px 0 4px">Investigate a queue of ads for fraud signals, gather evidence, and render verdicts under a limited action budget.</p>
+    <ol>
+      <li>Choose a <strong>task</strong> from the dropdown and click <strong>Reset environment</strong>.</li>
+      <li>Select an <strong>action type</strong> (investigate / verdict / skip / link_ads) and the target <strong>ad ID</strong>, then click <strong>Execute action</strong>.</li>
+      <li>Repeat: uncover evidence, link related ads, and submit verdicts until the budget runs out or all ads are reviewed.</li>
+      <li class="qs-hint">Click <strong>Get grader score</strong> to see the episode score.</li>
+    </ol>
+  </details>
+
+  <div class="stats-row">
+    <div class="stat-card"><div class="stat-label">Total ads</div><div class="stat-value" id="st-total">-</div></div>
+    <div class="stat-card"><div class="stat-label">Reviewed</div><div class="stat-value green" id="st-reviewed">-</div></div>
+    <div class="stat-card"><div class="stat-label">Budget left</div><div class="stat-value pink" id="st-budget">-</div></div>
+    <div class="stat-card"><div class="stat-label">Step</div><div class="stat-value amber" id="st-step">-</div></div>
+    <div class="stat-card"><div class="stat-label">Env score</div><div class="stat-value cyan" id="st-score">-</div></div>
+    <div class="stat-card"><div class="stat-label">Cumulative reward</div><div class="stat-value" id="st-cum">-</div></div>
+  </div>
+
+  <div class="cum-panel">
+    <h3>Cumulative reward trajectory</h3>
+    <div id="cum-chart"></div>
+  </div>
+
+  <div class="control-bar">
+    <select id="task-select" class="control-select" aria-label="Task">
+      <option value="task_1">Task 1 — Basic triage</option>
+      <option value="task_2">Task 2 — Sophisticated fraud</option>
+      <option value="task_3">Task 3 — Fraud networks</option>
+    </select>
+    <button class="btn btn-primary" id="btn-reset">Reset environment</button>
+    <button class="btn btn-success" id="btn-step" disabled>Execute action</button>
+    <button class="btn btn-amber" id="btn-score">Get grader score</button>
+    <button class="btn btn-ghost" id="btn-baseline">Load baseline JSON</button>
+    <button class="btn btn-ghost" onclick="window.open('/docs','_blank')">API docs</button>
+  </div>
+
+  <div class="feedback-strip" id="feedback">Select a task and reset to begin.</div>
+
+  <div class="main-grid">
+    <div>
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">Ad queue</span></div>
+        <div class="panel-body"><div class="ad-queue" id="ad-queue"></div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">Subject profile</span></div>
+        <div class="panel-body" id="profile-body"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">Investigation findings</span></div>
+        <div class="panel-body"><div class="inv-grid" id="findings-grid"></div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">RL intelligence log</span>
+          <button class="btn btn-ghost" style="padding:6px 12px;font-size:0.7rem;" id="btn-clear-log">Clear</button>
+        </div>
+        <div class="panel-body"><div class="log-area" id="log-area"></div></div>
+      </div>
+    </div>
+    <div>
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">Take action</span></div>
+        <div class="panel-body">
+          <div class="action-form">
+            <div class="form-group">
+              <label>Action type</label>
+              <select id="act-type">
+                <option value="investigate">Investigate</option>
+                <option value="verdict">Verdict</option>
+                <option value="link_accounts">Link accounts</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Ad ID</label>
+              <select id="act-ad"></select>
+            </div>
+            <div class="form-group" id="grp-target">
+              <label>Investigation target</label>
+              <select id="act-target">
+                <option value="advertiser_history">advertiser_history</option>
+                <option value="landing_page">landing_page</option>
+                <option value="payment_method">payment_method</option>
+                <option value="targeting_overlap">targeting_overlap</option>
+                <option value="creative_similarity">creative_similarity</option>
+                <option value="campaign_structure">campaign_structure</option>
+              </select>
+            </div>
+            <div class="form-group hidden" id="grp-verdict">
+              <label>Verdict</label>
+              <select id="act-verdict">
+                <option value="approve">approve</option>
+                <option value="reject">reject</option>
+                <option value="escalate">escalate</option>
+              </select>
+            </div>
+            <div class="form-group hidden" id="grp-conf">
+              <label>Confidence (0-1)</label>
+              <input type="number" id="act-conf" min="0" max="1" step="0.05" value="0.85" />
+            </div>
+            <div class="form-group hidden" id="grp-link">
+              <label>Linked ad ID</label>
+              <select id="act-linked"></select>
+            </div>
+            <div class="form-group hidden" id="grp-reason">
+              <label>Link reason</label>
+              <textarea id="act-reason" placeholder="Why are these ads connected? (e.g. shared payment ID, same template hash...)"></textarea>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">Verdict history</span></div>
+        <div class="panel-body" id="verdict-list"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><span class="panel-title">Benchmarks (cached)</span></div>
+        <div class="panel-body" id="bench-body" style="font-size:0.78rem;color:var(--text-dim);">Click &quot;Load baseline JSON&quot; to fetch /baseline.</div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    Pure HTML UI at <code>/investigate</code> &mdash;
+    <a href="/schema">Schema</a> &middot; <a href="/tasks">Tasks</a> &middot; <a href="/grader">Grader</a>
+  </footer>
+</div>
+<div class="toast-container" id="toasts"></div>
+
+<script>
+const API = '';
+const TARGETS = ['advertiser_history','landing_page','payment_method','targeting_overlap','creative_similarity','campaign_structure'];
+const TARGET_LABELS = {
+  advertiser_history: 'ADVERTISER',
+  landing_page: 'LANDING PAGE',
+  payment_method: 'PAYMENT',
+  targeting_overlap: 'TARGETING',
+  creative_similarity: 'CREATIVE',
+  campaign_structure: 'CAMPAIGN'
+};
+const FINDING_RE = /^\[(ad_\d+)\s*\/\s*([a-z_]+)\]/;
+
+let lastObs = null;
+let verdicts = {};
+let cumReward = 0;
+let cumHistory = [];
+let maxBudget = 0;
+let uiStep = 0;
+let episodeDone = false;
+
+function toast(msg, type) {
+  const c = document.getElementById('toasts');
+  const t = document.createElement('div');
+  t.className = 'toast ' + (type || 'info');
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => t.remove(), 3200);
+}
+
+function logLine(msg, cls) {
+  const a = document.getElementById('log-area');
+  const d = document.createElement('div');
+  d.className = 'log-entry ' + (cls || '');
+  d.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+  a.appendChild(d);
+  a.scrollTop = a.scrollHeight;
+}
+
+function parseFindings(raw) {
+  const out = {};
+  if (!raw) return out;
+  let curAd = null, curTgt = null, lines = [];
+  raw.split('\n').forEach(line => {
+    const m = line.trim().match(FINDING_RE);
+    if (m) {
+      if (curAd && curTgt) {
+        if (!out[curAd]) out[curAd] = {};
+        out[curAd][curTgt] = lines.join('\n').trim();
+      }
+      curAd = m[1]; curTgt = m[2]; lines = [];
+    } else lines.push(line);
+  });
+  if (curAd && curTgt) {
+    if (!out[curAd]) out[curAd] = {};
+    out[curAd][curTgt] = lines.join('\n').trim();
+  }
+  return out;
+}
+
+function focusedFromInfo(info) {
+  const m = info && info.match(/Ad in Focus:\s*(ad_\d+)/);
+  return m ? m[1] : null;
+}
+
+function renderStats(obs) {
+  const qs = obs.queue_status || {};
+  document.getElementById('st-total').textContent = qs.total_ads ?? '-';
+  document.getElementById('st-reviewed').textContent = qs.reviewed ?? '-';
+  document.getElementById('st-budget').textContent = qs.investigation_budget ?? qs.steps_remaining ?? '-';
+  document.getElementById('st-step').textContent = maxBudget ? (uiStep + ' / ' + maxBudget) : String(uiStep);
+  document.getElementById('st-score').textContent = '-';
+  const el = document.getElementById('st-cum');
+  el.textContent = (cumReward >= 0 ? '+' : '') + cumReward.toFixed(2);
+  el.className = 'stat-value ' + (cumReward >= 0 ? 'green' : 'red');
+}
+
+function renderCumChart() {
+  const host = document.getElementById('cum-chart');
+  if (!cumHistory.length) {
+    host.innerHTML = '<p style="color:var(--text-dim);font-size:0.85rem;">No steps yet.</p>';
+    return;
+  }
+  const w = 560, h = 110, pad = 10;
+  const vals = cumHistory.slice();
+  let mn = Math.min(...vals), mx = Math.max(...vals);
+  if (mn === mx) { mn -= 0.05; mx += 0.05; }
+  const n = vals.length;
+  const pts = vals.map((v, i) => {
+    const x = pad + (n <= 1 ? 0 : i / (n - 1)) * (w - 2 * pad);
+    const y = h - pad - ((v - mn) / (mx - mn)) * (h - 2 * pad);
+    return x + ',' + y;
+  }).join(' ');
+  const col = vals[vals.length - 1] >= 0 ? '#22c55e' : '#ef4444';
+  host.innerHTML = '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="xMidYMid meet"><rect width="' + w + '" height="' + h + '" fill="rgba(0,0,0,0.25)" rx="8"/><polyline fill="none" stroke="' + col + '" stroke-width="2.5" points="' + pts + '"/></svg>';
+}
+
+function renderQueue(obs) {
+  const ads = obs.available_ads || [];
+  const focused = focusedFromInfo(obs.current_ad_info || '');
+  const ids = [...new Set([...ads, ...Object.keys(verdicts)])].sort();
+  const el = document.getElementById('ad-queue');
+  el.innerHTML = '';
+  ids.forEach(id => {
+    const d = document.createElement('div');
+    let cls = 'ad-chip';
+    if (id === focused) cls += ' focus';
+    else if (verdicts[id]) cls += ' ' + (verdicts[id].verdict || '');
+    d.className = cls;
+    d.innerHTML = id + ' <span class="dot" style="background:' + (id === focused ? 'var(--amber)' : verdicts[id] ? 'var(--green)' : 'var(--text-dim)') + '"></span>';
+    el.appendChild(d);
+  });
+  if (!ids.length) el.innerHTML = '<span style="color:var(--text-dim)">Reset to load queue.</span>';
+}
+
+function renderProfile(obs) {
+  const info = obs.current_ad_info || '';
+  const body = document.getElementById('profile-body');
+  if (!info) {
+    body.innerHTML = '<p style="color:var(--text-dim)">No ad in focus.</p>';
+    return;
+  }
+  const fid = focusedFromInfo(info);
+  const cat = (info.match(/Category:\s*(.+)/) || [])[1] || '';
+  const risk = (info.match(/Risk signals:\s*(.+)/) || [])[1] || '';
+  const copy = (info.match(/Ad copy:\s*(.+)/) || [])[1] || '';
+  body.innerHTML =
+    '<div style="font-size:1.4rem;font-weight:800;margin-bottom:12px">' + (fid || '') + '</div>' +
+    '<div class="profile-meta">' +
+    '<div><div class="pm-label">Category</div><div class="pm-value">' + esc(cat) + '</div></div>' +
+    '<div><div class="pm-label">Risk</div><div class="pm-value">' + esc(risk || '—') + '</div></div></div>' +
+    (copy ? '<div class="ad-copy">' + esc(copy) + '</div>' : '');
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function renderFindings(obs) {
+  const raw = obs.investigation_findings || '';
+  const inv = parseFindings(raw);
+  const focused = focusedFromInfo(obs.current_ad_info || '');
+  const adInv = (focused && inv[focused]) || {};
+  const grid = document.getElementById('findings-grid');
+  grid.innerHTML = '';
+  TARGETS.forEach(t => {
+    const card = document.createElement('div');
+    card.className = 'inv-card' + (adInv[t] ? ' revealed' : ' locked');
+    const label = TARGET_LABELS[t] || t;
+    const inner = adInv[t]
+      ? '<div class="inv-inner"><div class="inv-label">' + esc(label) + '</div><div class="inv-content">' + esc(adInv[t].slice(0, 220)) + (adInv[t].length > 220 ? '...' : '') + '</div></div>'
+      : '<div class="inv-inner"><div class="inv-label">' + esc(label) + '</div><div class="inv-content">Classified</div></div><div class="lock-icon">&#128274;</div>';
+    card.innerHTML = inner;
+    grid.appendChild(card);
+  });
+}
+
+function fillAdSelects(obs) {
+  const ads = obs.available_ads || [];
+  const sel = document.getElementById('act-ad');
+  const lk = document.getElementById('act-linked');
+  sel.innerHTML = '';
+  lk.innerHTML = '';
+  ads.forEach(a => {
+    const o = document.createElement('option');
+    o.value = a; o.textContent = a;
+    sel.appendChild(o);
+    const o2 = document.createElement('option');
+    o2.value = a; o2.textContent = a;
+    lk.appendChild(o2);
+  });
+}
+
+function renderVerdicts() {
+  const el = document.getElementById('verdict-list');
+  el.innerHTML = '';
+  const keys = Object.keys(verdicts);
+  if (!keys.length) {
+    el.innerHTML = '<p style="color:var(--text-dim);font-size:0.85rem;">None yet.</p>';
+    return;
+  }
+  keys.forEach(aid => {
+    const v = verdicts[aid];
+    const row = document.createElement('div');
+    row.className = 'verdict-row';
+    row.innerHTML = '<span>' + esc(aid) + '</span><span style="color:var(--text-dim)">' + ((v.confidence * 100) | 0) + '%</span><span class="v-badge ' + esc(v.verdict) + '">' + esc(v.verdict) + '</span>';
+    el.appendChild(row);
+  });
+}
+
+function applyObs(data) {
+  const obs = data.observation || {};
+  lastObs = obs;
+  renderStats(obs);
+  renderQueue(obs);
+  renderProfile(obs);
+  renderFindings(obs);
+  fillAdSelects(obs);
+  renderCumChart();
+  renderVerdicts();
+}
+
+function toggleActionFields() {
+  const t = document.getElementById('act-type').value;
+  document.getElementById('grp-target').classList.toggle('hidden', t !== 'investigate');
+  document.getElementById('grp-verdict').classList.toggle('hidden', t !== 'verdict');
+  document.getElementById('grp-conf').classList.toggle('hidden', t !== 'verdict');
+  document.getElementById('grp-link').classList.toggle('hidden', t !== 'link_accounts');
+  document.getElementById('grp-reason').classList.toggle('hidden', t !== 'link_accounts');
+}
+
+document.getElementById('act-type').addEventListener('change', toggleActionFields);
+
+document.getElementById('btn-reset').onclick = async () => {
+  try {
+    const task = document.getElementById('task-select').value;
+    const res = await fetch(API + '/investigate/api/reset', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_id: task, seed: 42 })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || res.statusText);
+    verdicts = {};
+    cumReward = 0;
+    cumHistory = [];
+    uiStep = 0;
+    episodeDone = false;
+    maxBudget = (data.observation && data.observation.queue_status && data.observation.queue_status.investigation_budget) || 25;
+    applyObs(data);
+    document.getElementById('btn-step').disabled = false;
+    document.getElementById('feedback').textContent = 'Episode started. Budget: ' + maxBudget + ' actions.';
+    logLine('Reset OK (' + task + ')', 'ok');
+    toast('Environment reset', 'success');
+  } catch (e) {
+    toast(String(e.message), 'error');
+    logLine('Reset failed: ' + e.message, 'bad');
+  }
+};
+
+document.getElementById('btn-step').onclick = async () => {
+  if (episodeDone) { toast('Episode finished — reset first', 'error'); return; }
+  const t = document.getElementById('act-type').value;
+  const ad = document.getElementById('act-ad').value;
+  const body = { action_type: t, ad_id: ad };
+  if (t === 'investigate') body.investigation_target = document.getElementById('act-target').value;
+  else if (t === 'verdict') {
+    body.verdict = document.getElementById('act-verdict').value;
+    body.confidence = parseFloat(document.getElementById('act-conf').value) || 0.5;
+    verdicts[ad] = { verdict: body.verdict, confidence: body.confidence };
+  } else if (t === 'link_accounts') {
+    body.linked_ad_id = document.getElementById('act-linked').value;
+    body.link_reason = document.getElementById('act-reason').value.trim() || '—';
+  }
+  try {
+    const res = await fetch(API + '/investigate/api/step', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
+    const r = data.reward != null ? data.reward : 0;
+    cumReward += r;
+    cumHistory.push(cumReward);
+    uiStep += 1;
+    episodeDone = !!data.done;
+    applyObs(data);
+    document.getElementById('feedback').textContent = (data.observation && data.observation.feedback) || ('Reward ' + r);
+    logLine('Step ' + uiStep + ' reward ' + r + ' cum ' + cumReward.toFixed(2), r < 0 ? 'bad' : 'ok');
+    if (data.done) {
+      document.getElementById('btn-step').disabled = true;
+      toast('Episode complete', 'success');
+    }
+  } catch (e) {
+    toast(String(e.message), 'error');
+    logLine('Step error: ' + e.message, 'bad');
+  }
+};
+
+document.getElementById('btn-score').onclick = async () => {
+  try {
+    const res = await fetch(API + '/grader');
+    const g = await res.json();
+    if (g.grader_score != null) {
+      document.getElementById('st-score').textContent = Number(g.grader_score).toFixed(3);
+      toast('Grader score: ' + g.grader_score.toFixed(3), 'success');
+    } else toast(g.error || 'No grader yet', 'info');
+  } catch (e) { toast(String(e.message), 'error'); }
+};
+
+document.getElementById('btn-baseline').onclick = async () => {
+  try {
+    const res = await fetch(API + '/baseline');
+    const j = await res.json();
+    const el = document.getElementById('bench-body');
+    el.innerHTML = '<pre style="white-space:pre-wrap;word-break:break-all;max-height:200px;overflow:auto">' + esc(JSON.stringify(j, null, 2)) + '</pre>';
+    toast('Loaded /baseline', 'success');
+  } catch (e) { toast(String(e.message), 'error'); }
+};
+
+document.getElementById('btn-clear-log').onclick = () => { document.getElementById('log-area').innerHTML = ''; };
+
+toggleActionFields();
+</script>
+</body>
+</html>
