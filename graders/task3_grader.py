@@ -33,7 +33,7 @@ class Task3Grader(BaseGrader):
                 worst -= 0.5
             elif v.ground_truth == "legit":
                 best += 0.1
-                worst -= 0.4
+                worst -= 0.35
             elif v.ground_truth == "escalate":
                 best += 0.15
                 worst -= 0.15

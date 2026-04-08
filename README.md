@@ -84,7 +84,7 @@ Observations are text-heavy to support LLM reasoning:
 | Investigation | -0.02 | Simulates latency cost |
 | Correct rejection (TP) | +0.30 to +0.40 | Scaled by fraud severity |
 | Correct approval (TN) | +0.10 | Revenue preserved |
-| False positive (reject legit) | -0.40 | Lost advertiser revenue |
+| False positive (reject legit) | -0.35 | Lost advertiser revenue |
 | False negative (approve fraud) | -0.50 | Worst outcome |
 | Escalate | -0.05 | Human reviewer cost |
 | Correct network link | +0.40 | High-value detection |

@@ -289,7 +289,7 @@ class AdFraudEnvironment(
         elif verdict == "escalate" and ground_truth == "escalate":
             return 0.15
         elif verdict == "reject" and ground_truth == "legit":
-            return -0.4
+            return -0.35
         elif verdict == "approve" and ground_truth == "fraud":
             return -0.5
         elif verdict == "escalate":

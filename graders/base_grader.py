@@ -11,6 +11,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+_NORM_EPS = 1e-8  # For numerical stability
+
 
 @dataclass
 class VerdictResult:
@@ -83,7 +85,7 @@ class BaseGrader(ABC):
         elif v.verdict == "escalate" and v.ground_truth == "escalate":
             return 0.15
         elif v.verdict == "reject" and v.ground_truth == "legit":
-            return -0.4
+            return -0.35
         elif v.verdict == "approve" and v.ground_truth == "fraud":
             return -0.5
         elif v.verdict == "escalate":
@@ -98,7 +100,7 @@ class BaseGrader(ABC):
         score_range = best - worst
         if score_range <= 0:
             return 0.5
-        normalized = (raw - worst) / score_range
+        normalized = (raw - worst) / (score_range + _NORM_EPS)
         return max(0.0, min(1.0, normalized))
 
 
