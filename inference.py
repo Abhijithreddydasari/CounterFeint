@@ -46,13 +46,6 @@ load_dotenv()
 
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-MODEL_NAME = os.getenv("MODEL_NAME")
-"""
-Since there is an upper limit for LLMs in Hugging Face, we are currently shifting to Ollama models for inference.
-Here are the details of Hugging Face models:
-API_BASE_URL: https://router.huggingface.co/v1
-MODEL_NAME: meta-llama/Llama-3.1-8B-Instruct
-"""
 MODEL_NAME = os.getenv("MODEL_NAME") or "meta-llama/Llama-3.1-8B-Instruct"
 IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("IMAGE_NAME")
 ENV_URL = os.getenv("AD_FRAUD_ENV_URL", "http://localhost:8000")
@@ -140,6 +133,10 @@ Output ONLY the JSON action, no other text.
 """
 
 JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
+_FINDING_BLOCK_RE = re.compile(r"\[(ad_\d+)\s*/\s*([a-z_]+)\]")
+_ANALYSIS_HEADER_RE = re.compile(
+    r"^(?:Payment Method|Targeting|Creative|Campaign Structure) Analysis for ad_\d+:$"
+)
 
 
 def _extract_json(text: str) -> Dict[str, Any]:
@@ -155,13 +152,81 @@ def _extract_json(text: str) -> Dict[str, Any]:
     return json.loads(text)
 
 
-def build_obs_prompt(obs: Any) -> str:
-    """Format an observation into the full user prompt for the LLM.
+def _compact_finding(text: str) -> str:
+    """Compress one investigation finding block into a compact key-value line.
 
-    No truncation -- each observation is self-contained (includes all
-    accumulated findings and verdict summary), so the agent always has
-    complete information for cross-ad reasoning.
+    Strips analysis headers and section labels but preserves ALL data fields
+    (both signal and noise) so the agent must still reason about relevance.
     """
+    parts: List[str] = []
+    for line in text.strip().split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _ANALYSIS_HEADER_RE.match(stripped):
+            continue
+        if stripped in ("Key claims on page:", "Suspicious elements:"):
+            continue
+        if stripped.startswith("- "):
+            stripped = stripped[2:]
+        parts.append(stripped)
+    return " | ".join(parts)
+
+
+def _build_compact_findings(raw: str, focused_ad: Optional[str]) -> str:
+    """Parse findings blocks; full prose for focused ad, compact lines for others.
+
+    Each block in the raw findings string is delimited by [ad_XXX / target].
+    The focused ad keeps full investigation prose for deep reasoning.
+    Other ads are compressed to single-line key-value summaries that still
+    contain all extracted fields (payment type, IDs, template hashes,
+    fingerprints, domain ages, etc.) mixed with noise fields — the agent
+    must determine which values are meaningful for cross-ad comparison.
+    """
+    blocks: List[tuple] = []
+    current_ad: Optional[str] = None
+    current_header: Optional[str] = None
+    current_lines: List[str] = []
+
+    for line in raw.split("\n"):
+        m = _FINDING_BLOCK_RE.match(line.strip())
+        if m:
+            if current_ad is not None:
+                blocks.append((current_ad, current_header, "\n".join(current_lines)))
+            current_ad = m.group(1)
+            current_header = line.strip()
+            current_lines = []
+        else:
+            current_lines.append(line)
+
+    if current_ad is not None:
+        blocks.append((current_ad, current_header, "\n".join(current_lines)))
+
+    result: List[str] = []
+    for ad_id, header, text in blocks:
+        if focused_ad and ad_id == focused_ad:
+            result.append(f"\n{header}\n{text}")
+        else:
+            compact = _compact_finding(text)
+            if compact:
+                result.append(f"{header} {compact}")
+
+    return "\n".join(result)
+
+
+def build_obs_prompt(obs: Any) -> str:
+    """Format an observation into the user prompt for the LLM.
+
+    The focused ad gets full investigation prose for deep reasoning.
+    Other investigated ads are compressed to compact key-value summaries
+    that preserve all fields (signal + noise) for cross-ad comparison.
+    """
+    focused_ad: Optional[str] = None
+    if obs.current_ad_info:
+        m = re.search(r"Ad in Focus:\s*(ad_\d+)", obs.current_ad_info)
+        if m:
+            focused_ad = m.group(1)
+
     parts = [
         f"Queue: {obs.queue_summary}",
         f"Current Ad: {obs.current_ad_info}",
@@ -171,7 +236,9 @@ def build_obs_prompt(obs: Any) -> str:
     if obs.verdict_history_summary and obs.verdict_history_summary != "No verdicts yet.":
         parts.append(f"Verdicts: {obs.verdict_history_summary}")
     if obs.investigation_findings:
-        parts.append(f"Findings:\n{obs.investigation_findings}")
+        findings = _build_compact_findings(obs.investigation_findings, focused_ad)
+        if findings:
+            parts.append(f"Findings:\n{findings}")
     return "\n\n".join(parts)
 
 # ---------------------------------------------------------------------------

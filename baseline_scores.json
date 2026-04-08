@@ -4,21 +4,21 @@
   "tasks": {
     "task_1": {
       "task_id": "task_1",
-      "score": 0.9530516409552781,
-      "steps": 10,
+      "score": 0.9603547186637474,
+      "steps": 9,
       "verdicts": 5,
       "total_ads": 5
     },
     "task_2": {
       "task_id": "task_2",
-      "score": 0.8819346167445099,
-      "steps": 23,
+      "score": 0.8877459920214088,
+      "steps": 24,
       "verdicts": 12,
       "total_ads": 12
     },
     "task_3": {
       "task_id": "task_3",
-      "score": 0.41547181673781164,
+      "score": 0.4817339313969324,
       "steps": 35,
       "verdicts": 20,
       "total_ads": 20
