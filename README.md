@@ -17,6 +17,9 @@ tags:
 An OpenEnv environment that simulates ad fraud review - a real-world task where AI agents investigate queues of advertisements, uncover fraud signals, and render verdicts under budget constraints.
 
 Ad fraud costs the digital advertising industry over **$100 billion annually**. Platforms like Meta process billions of ads daily and ban advertisers only at high confidence thresholds. Unlike simple classification, real ad review is a **sequential decision-making** problem: a reviewer starts with limited surface-level signals, actively chooses what to investigate within a constrained budget, and must decide when enough evidence exists to commit to a verdict. This environment captures that workflow and provides a training ground for agents to learn it.
+<p align="center">
+<img src="assets/ad%20fraud%20asset.png" width="800"/>
+</p>
 
 ## Quick Start
 
@@ -256,9 +259,10 @@ ad_fraud_env/
 |   +-- static/
 |       +-- investigate_hq.html  # Interactive investigation dashboard
 +-- tests/
-    +-- test_data_generation.py  # Determinism, cross-ref checks, decoy validation
-    +-- test_environment.py      # Step logic, state tracking, anti-exploit
-    +-- test_graders.py          # Score ranges, calibration, network scoring
+|   +-- test_data_generation.py  # Determinism, cross-ref checks, decoy validation
+|   +-- test_environment.py      # Step logic, state tracking, anti-exploit
+|   +-- test_graders.py          # Score ranges, calibration, network scoring
++-- assets
 ```
 
 ## API Endpoints
