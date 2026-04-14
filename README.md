@@ -68,6 +68,7 @@ with AdFraudEnv(base_url="http://localhost:8000").sync() as env:
 docker build -t ad-fraud-env .
 docker run -p 8000:8000 ad-fraud-env
 ```
+You can play with this environment hosted on [Hugging Face Spaces](https://huggingface.co/spaces/QuantumTransformer/AdArena)
 
 ## Environment Design
 
