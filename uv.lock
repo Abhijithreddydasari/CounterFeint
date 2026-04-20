@@ -1460,7 +1460,7 @@ wheels = [
 ]
 
 [[package]]
-name = "openenv-ad-fraud-env"
+name = "openenv-counterfeint"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

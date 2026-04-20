@@ -1,10 +1,10 @@
 """
-Ad Fraud Investigation Environment Client.
+CounterFeint - Ad Fraud Investigation Environment Client.
 
 Provides programmatic access via WebSocket. Users and evaluators interact
 with the environment using:
 
-    env = AdFraudEnv.from_hub("your-org/ad-fraud-env")
+    env = AdFraudEnv.from_hub("your-org/counterfeint")
     # or
     env = AdFraudEnv(base_url="http://localhost:8000")
 """

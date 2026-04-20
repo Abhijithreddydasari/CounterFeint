@@ -34,7 +34,7 @@ app = create_app(
     AdFraudEnvironment,
     AdReviewAction,
     AdReviewObservation,
-    env_name="ad_fraud_env",
+    env_name="counterfeint",
 )
 
 register_investigate_ui(app)

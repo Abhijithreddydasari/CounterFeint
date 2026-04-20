@@ -2,7 +2,7 @@
 
 import json
 
-from ad_fraud_env.data.ad_generator import generate_episode
+from counterfeint.data.ad_generator import generate_episode
 
 
 class TestDeterminism:

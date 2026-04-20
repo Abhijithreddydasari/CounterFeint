@@ -1,6 +1,6 @@
 """Tests for the grading system."""
 
-from ad_fraud_env.graders.base_grader import (
+from counterfeint.graders.base_grader import (
     BaseGrader,
     EpisodeRecord,
     LinkResult,

@@ -1,5 +1,5 @@
 spec_version: 1
-name: ad_fraud_env
+name: counterfeint
 type: space
 sdk: docker
 runtime: fastapi

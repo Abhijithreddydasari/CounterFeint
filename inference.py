@@ -35,9 +35,9 @@ try:
     from .data.ad_generator import TASK_CONFIGS
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from ad_fraud_env.client import AdFraudEnv
-    from ad_fraud_env.models import AdReviewAction
-    from ad_fraud_env.data.ad_generator import TASK_CONFIGS
+    from counterfeint.client import AdFraudEnv
+    from counterfeint.models import AdReviewAction
+    from counterfeint.data.ad_generator import TASK_CONFIGS
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -45,8 +45,8 @@ load_dotenv()
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
 HF_TOKEN = os.getenv("HF_TOKEN")
-ENV_URL = os.getenv("AD_FRAUD_ENV_URL", "https://QuantumTransformer-AdArena.hf.space")
-BENCHMARK = "ad_fraud_env"
+ENV_URL = os.getenv("COUNTERFEINT_ENV_URL", "https://QuantumTransformer-AdArena.hf.space")
+BENCHMARK = "counterfeint"
 TEMPERATURE = 0.1
 MAX_TOKENS = 256
 FALLBACK_VERDICT = "escalate"
@@ -429,7 +429,7 @@ def main() -> None:
     if not HF_TOKEN:
         print("Error: HF_TOKEN environment variable is required.", file=sys.stderr)
         sys.exit(1)
-    env_base_url = os.getenv("AD_FRAUD_ENV_URL", "https://QuantumTransformer-AdArena.hf.space")
+    env_base_url = os.getenv("COUNTERFEINT_ENV_URL", "https://QuantumTransformer-AdArena.hf.space")
 
     print(f"Running baseline inference against {env_base_url} with model {MODEL_NAME}...", file=sys.stderr)
     scores = run_baseline(env_base_url=env_base_url)

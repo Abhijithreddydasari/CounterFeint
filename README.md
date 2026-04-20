@@ -1,5 +1,5 @@
 ---
-title: Ad Fraud Investigation Environment
+title: CounterFeint
 emoji: "\U0001F575\uFE0F"
 colorFrom: red
 colorTo: yellow
@@ -12,14 +12,11 @@ tags:
   - reinforcement-learning
 ---
 
-# Ad Fraud Investigation Environment
+# CounterFeint — Ad Fraud Investigation Environment
 
 An OpenEnv environment that simulates ad fraud review - a real-world task where AI agents investigate queues of advertisements, uncover fraud signals, and render verdicts under budget constraints.
 
 Ad fraud costs the digital advertising industry over **$100 billion annually**. Platforms like Meta process billions of ads daily and ban advertisers only at high confidence thresholds. Unlike simple classification, real ad review is a **sequential decision-making** problem: a reviewer starts with limited surface-level signals, actively chooses what to investigate within a constrained budget, and must decide when enough evidence exists to commit to a verdict. This environment captures that workflow and provides a training ground for agents to learn it.
-<p align="center">
-<img src="assets/ad%20fraud%20asset.png" width="700"/>
-</p>
 
 ## Quick Start
 
@@ -38,7 +35,7 @@ uvicorn server.app:app --host 0.0.0.0 --port 8000
 ### Use the client
 
 ```python
-from ad_fraud_env import AdFraudEnv, AdReviewAction
+from counterfeint import AdFraudEnv, AdReviewAction
 
 with AdFraudEnv(base_url="http://localhost:8000").sync() as env:
     result = env.reset(seed=42, task_id="task_1")
@@ -65,10 +62,9 @@ with AdFraudEnv(base_url="http://localhost:8000").sync() as env:
 ### Run with Docker
 
 ```bash
-docker build -t ad-fraud-env .
-docker run -p 8000:8000 ad-fraud-env
+docker build -t counterfeint .
+docker run -p 8000:8000 counterfeint
 ```
-You can play with this environment hosted on [Hugging Face Spaces](https://huggingface.co/spaces/QuantumTransformer/AdArena)
 
 ## Environment Design
 
@@ -229,7 +225,7 @@ The sharp drop on Task 3 reflects the difficulty of cross-ad reasoning under tig
 ## Project Structure
 
 ```
-ad_fraud_env/
+counterfeint/
 +-- __init__.py              # Package exports
 +-- client.py                # WebSocket client (extends EnvClient)
 +-- models.py                # Action, Observation, State types
@@ -260,10 +256,9 @@ ad_fraud_env/
 |   +-- static/
 |       +-- investigate_hq.html  # Interactive investigation dashboard
 +-- tests/
-|   +-- test_data_generation.py  # Determinism, cross-ref checks, decoy validation
-|   +-- test_environment.py      # Step logic, state tracking, anti-exploit
-|   +-- test_graders.py          # Score ranges, calibration, network scoring
-+-- assets
+    +-- test_data_generation.py  # Determinism, cross-ref checks, decoy validation
+    +-- test_environment.py      # Step logic, state tracking, anti-exploit
+    +-- test_graders.py          # Score ranges, calibration, network scoring
 ```
 
 ## API Endpoints

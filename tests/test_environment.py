@@ -1,7 +1,7 @@
 """Tests for the core AdFraudEnvironment."""
 
-from ad_fraud_env.models import AdReviewAction, AdReviewObservation, AdFraudState
-from ad_fraud_env.server.environment import AdFraudEnvironment
+from counterfeint.models import AdReviewAction, AdReviewObservation, AdFraudState
+from counterfeint.server.environment import AdFraudEnvironment
 
 
 class TestReset:
