@@ -1,18 +1,24 @@
 """
-Core Ad Fraud Investigation Environment.
+Core Ad Fraud Investigation Environment (Investigator role).
 
-Implements the OpenEnv Environment interface. The agent reviews a queue of ads,
-investigates them, and renders verdicts under a budget constraint.
+Implements the OpenEnv Environment interface for the Investigator agent:
+reviewing a queue of ads, investigating them, and rendering verdicts under
+a budget constraint.
+
+In Round 1 this environment is used standalone (`AdFraudEnvironment` alias
+preserves backwards compatibility).  In Round 2 it is driven by the
+`RefereeEnvironment`, which pre-generates episodes and supplies a shared
+`InvestigationToolRegistry` so Fraudster-proposed ads are reachable through
+the same investigation code path.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from openenv.core.env_server.interfaces import Environment
-from openenv.core.env_server.types import State
 
 try:
     from ..data.ad_generator import (
@@ -21,6 +27,7 @@ try:
         GeneratedEpisode,
         generate_episode,
     )
+    from ..data.tool_registry import InvestigationToolRegistry
     from ..models import AdFraudState, AdReviewAction, AdReviewObservation
     from ..graders.base_grader import EpisodeRecord, LinkResult, VerdictResult, grade_episode
 except ImportError:
@@ -30,6 +37,7 @@ except ImportError:
         GeneratedEpisode,
         generate_episode,
     )
+    from data.tool_registry import InvestigationToolRegistry
     from models import AdFraudState, AdReviewAction, AdReviewObservation
     from graders.base_grader import EpisodeRecord, LinkResult, VerdictResult, grade_episode
 
@@ -43,15 +51,21 @@ def get_last_grader_result() -> Dict[str, Any]:
     return dict(_last_grader_result)
 
 
-class AdFraudEnvironment(
+class InvestigatorEnvironment(
     Environment[AdReviewAction, AdReviewObservation, AdFraudState]
 ):
     """
-    Ad fraud investigation environment.
+    Ad fraud investigation environment (Investigator role).
 
     Each episode is a review session: the agent processes a queue of N ads
     within a limited action budget, choosing what to investigate and when
     to render verdicts. Unreviewed ads auto-approve at episode end.
+
+    `reset()` accepts optional `episode` and `registry` kwargs so the
+    Referee (or a test harness) can inject a pre-built `GeneratedEpisode`
+    plus a shared `InvestigationToolRegistry`.  Without them, the
+    environment generates its own synthetic episode and a fresh registry
+    (the Round 1 behaviour).
     """
 
     SUPPORTS_CONCURRENT_SESSIONS = True
@@ -60,6 +74,7 @@ class AdFraudEnvironment(
         super().__init__()
         self._state = AdFraudState(episode_id=str(uuid4()), step_count=0)
         self._episode: Optional[GeneratedEpisode] = None
+        self._registry: Optional[InvestigationToolRegistry] = None
         self._verdicts: Dict[str, Dict[str, Any]] = {}
         self._links: List[Dict[str, Any]] = []
         self._investigations: Dict[str, List[str]] = {}
@@ -67,6 +82,7 @@ class AdFraudEnvironment(
         self._done = False
         self._last_feedback = ""
         self._focused_ad_id: Optional[str] = None
+        self._queue_may_grow: bool = False
 
     # ------------------------------------------------------------------
     # OpenEnv interface
@@ -82,8 +98,22 @@ class AdFraudEnvironment(
         if task_id not in TASK_CONFIGS:
             task_id = "task_1"
 
-        effective_seed = seed if seed is not None else hash(uuid4()) & 0xFFFFFFFF
-        self._episode = generate_episode(effective_seed, task_id)
+        injected_episode: Optional[GeneratedEpisode] = kwargs.get("episode")
+        injected_registry: Optional[InvestigationToolRegistry] = kwargs.get("registry")
+        self._queue_may_grow = bool(kwargs.get("queue_may_grow", False))
+
+        if injected_episode is not None:
+            self._episode = injected_episode
+        else:
+            effective_seed = (
+                seed if seed is not None else hash(uuid4()) & 0xFFFFFFFF
+            )
+            self._episode = generate_episode(effective_seed, task_id)
+
+        if injected_registry is not None:
+            self._registry = injected_registry
+        else:
+            self._registry = InvestigationToolRegistry.from_episode(self._episode)
 
         config = self._episode.task_config
         self._state = AdFraudState(
@@ -194,9 +224,12 @@ class AdFraudEnvironment(
         prev.append(target)
         self._focused_ad_id = ad_id
 
-        findings = self._episode.investigation_data.get(ad_id, {}).get(
-            target, "No data available for this investigation type."
-        )
+        if self._registry is not None:
+            findings = self._registry.lookup(ad_id, target)
+        else:
+            findings = self._episode.investigation_data.get(ad_id, {}).get(
+                target, "No data available for this investigation type."
+            )
         self._last_feedback = (
             f"Investigation complete: {target} for {ad_id}.\n"
             f"--- Findings ---\n{findings}"
@@ -457,6 +490,7 @@ class AdFraudEnvironment(
                 feedback=feedback,
                 available_ads=[],
                 queue_status={},
+                queue_may_grow=self._queue_may_grow,
             )
 
         config = self._episode.task_config
@@ -507,8 +541,11 @@ class AdFraudEnvironment(
         investigation_findings = ""
         for ad_id, targets in self._investigations.items():
             for target in targets:
-                finding = self._episode.investigation_data.get(ad_id, {}).get(target, "")
-                if finding:
+                if self._registry is not None:
+                    finding = self._registry.lookup(ad_id, target)
+                else:
+                    finding = self._episode.investigation_data.get(ad_id, {}).get(target, "")
+                if finding and not finding.startswith("No data") and not finding.startswith("Unknown"):
                     investigation_findings += f"\n[{ad_id} / {target}]\n{finding}\n"
 
         manual_verdicts = {
@@ -556,4 +593,53 @@ class AdFraudEnvironment(
             feedback=feedback,
             available_ads=available_ads,
             queue_status=queue_status,
+            queue_may_grow=self._queue_may_grow,
         )
+
+    # ------------------------------------------------------------------
+    # Referee integration hooks
+    # ------------------------------------------------------------------
+
+    def notify_queue_grew(self, new_ad_id: str) -> None:
+        """
+        Called by the Referee after `extend_episode_with_proposal` adds a
+        new ad to the shared episode + registry.  Updates the Investigator's
+        view of queue size and refocuses on the new ad if the Investigator
+        is idle.
+        """
+        if self._episode is None:
+            return
+        self._state.total_ads = len(self._episode.ads)
+        if self._focused_ad_id is None or self._focused_ad_id in self._verdicts:
+            self._focused_ad_id = new_ad_id
+
+    @property
+    def episode(self) -> Optional[GeneratedEpisode]:
+        """Read-only access to the loaded episode (used by the Referee)."""
+        return self._episode
+
+    @property
+    def registry(self) -> Optional[InvestigationToolRegistry]:
+        """Read-only access to the shared tool registry."""
+        return self._registry
+
+    @property
+    def verdicts(self) -> Dict[str, Dict[str, Any]]:
+        """Read-only snapshot of verdicts recorded so far (Referee/auditor)."""
+        return dict(self._verdicts)
+
+    @property
+    def investigations(self) -> Dict[str, List[str]]:
+        """Read-only snapshot of investigation targets pulled per ad."""
+        return {k: list(v) for k, v in self._investigations.items()}
+
+    @property
+    def links(self) -> List[Dict[str, Any]]:
+        """Read-only snapshot of recorded network links."""
+        return list(self._links)
+
+
+# Backwards-compatible alias.  Round 1 code, tests, clients, and external
+# integrations import `AdFraudEnvironment` directly; keeping the symbol
+# means the rename is zero-breakage.
+AdFraudEnvironment = InvestigatorEnvironment

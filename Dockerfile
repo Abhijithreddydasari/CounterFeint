@@ -1,53 +1,90 @@
-ARG BASE_IMAGE=ghcr.io/meta-pytorch/openenv-base:latest
-FROM ${BASE_IMAGE} AS builder
+############################################################
+# CounterFeint — multi-agent ad-fraud FraudArena.
+#
+# Build:
+#     docker build -t counterfeint:latest -f counterfeint/Dockerfile counterfeint/
+# Run:
+#     docker run --rm -p 8000:8000 counterfeint:latest
+# Health:
+#     curl http://localhost:8000/api/v1/health
+############################################################
 
-WORKDIR /app
+ARG PYTHON_VERSION=3.11
 
-ARG BUILD_MODE=in-repo
+############################
+# Stage 1 — builder (wheel)
+############################
+FROM python:${PYTHON_VERSION}-slim AS builder
 
-COPY . /app/env
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
 
-WORKDIR /app/env
+WORKDIR /build
 
-RUN if ! command -v uv >/dev/null 2>&1; then \
-        curl -LsSf https://astral.sh/uv/install.sh | sh && \
-        mv /root/.local/bin/uv /usr/local/bin/uv && \
-        mv /root/.local/bin/uvx /usr/local/bin/uvx; \
-    fi
+# Install build tooling.
+RUN pip install --upgrade pip build wheel setuptools
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        git \
-    && rm -rf /var/lib/apt/lists/*
+# Leverage Docker's layer cache: copy manifest + deps first.
+COPY pyproject.toml ./
 
-ENV UV_LINK_MODE=copy
+# Copy the rest of the package (uses pyproject `package-dir = "."`).
+COPY . .
 
-RUN --mount=type=cache,target=/root/.cache/uv \
-    if [ -f uv.lock ]; then \
-        uv sync --frozen --no-install-project --no-editable; \
-    else \
-        uv sync --no-install-project --no-editable; \
-    fi
+# Pre-build wheels for all project dependencies (cached layer) AND the
+# project itself so the runtime image only needs `pip install *.whl`.
+RUN pip wheel --no-cache-dir --wheel-dir /wheels --no-deps . && \
+    pip wheel --no-cache-dir --wheel-dir /wheels \
+        "openenv-core[core]>=0.2.3" \
+        "fastapi>=0.115.0" \
+        "pydantic>=2.0.0" \
+        "uvicorn[standard]>=0.24.0" \
+        "websockets>=13.0" \
+        "requests>=2.31.0" \
+        "faker==33.1.0" \
+        "networkx>=3.2" \
+        "openai>=1.0.0" \
+        "python-dotenv>=1.0.0"
 
-RUN --mount=type=cache,target=/root/.cache/uv \
-    if [ -f uv.lock ]; then \
-        uv sync --frozen --no-editable; \
-    else \
-        uv sync --no-editable; \
-    fi
 
-FROM ${BASE_IMAGE}
+############################
+# Stage 2 — runtime
+############################
+FROM python:${PYTHON_VERSION}-slim AS runtime
 
-WORKDIR /app
+ARG BUILD_SHA=dev
+ARG BUILD_TIME=unknown
 
-COPY --from=builder /app/env/.venv /app/.venv
-COPY --from=builder /app/env /app/env
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    COUNTERFEINT_BUILD_SHA=${BUILD_SHA} \
+    COUNTERFEINT_BUILD_TIME=${BUILD_TIME} \
+    ENABLE_WEB_INTERFACE=false \
+    PORT=8000
 
-ENV PATH="/app/.venv/bin:$PATH"
-ENV PYTHONPATH="/app/env:$PYTHONPATH"
-# Gradio /web UI disabled; use HTML dashboard at /investigate (see server/app.py).
-ENV ENABLE_WEB_INTERFACE=false
+# Non-root user.
+RUN groupadd --system counterfeint && \
+    useradd --system --gid counterfeint --home /home/counterfeint counterfeint && \
+    mkdir -p /home/counterfeint && \
+    chown -R counterfeint:counterfeint /home/counterfeint
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+# Install deps from pre-built wheels.
+COPY --from=builder /wheels /wheels
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir /wheels/*.whl && \
+    rm -rf /wheels
 
-CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Drop to the non-root user.
+USER counterfeint
+WORKDIR /home/counterfeint
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import sys,urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3); sys.exit(0 if r.status==200 else 1)" \
+    || exit 1
+
+CMD ["uvicorn", "counterfeint.server.app:app", "--host", "0.0.0.0", "--port", "8000"]

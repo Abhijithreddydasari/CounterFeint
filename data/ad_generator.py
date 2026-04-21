@@ -559,3 +559,97 @@ def _generate_campaign_investigation(
     lines.append(f"  Campaign configuration fingerprint: {config_hash}")
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Fraudster-proposal extension (Round 2)
+# ---------------------------------------------------------------------------
+
+
+def _category_to_fraud_template(category: str) -> AdTemplate:
+    """Pick the closest matching FRAUD_TEMPLATE for a Fraudster-declared category."""
+    for tmpl in FRAUD_TEMPLATES:
+        if tmpl.category == category:
+            return tmpl
+    return FRAUD_TEMPLATES[0]
+
+
+def generate_proposal_data(
+    *,
+    rng: random.Random,
+    ad_id: str,
+    ad_copy: str,
+    category: str,
+    landing_page_blurb: Optional[str] = None,
+    targeting_summary: Optional[str] = None,
+    existing_ads: Optional[List[Ad]] = None,
+) -> Tuple[Ad, Dict[str, str], AdvertiserProfile, CampaignProfile, "LandingPageData"]:
+    """
+    Build a fully-formed Ad + investigation_data for a Fraudster-proposed ad.
+
+    The Fraudster controls the *surface*: ad_copy, category, landing page blurb,
+    targeting summary.  Underlying account / payment / campaign signals are
+    sampled from the fraud-mode distribution so the Investigator has a real
+    detection task.
+
+    Returns
+    -------
+    ad
+        The Ad object (ground_truth_label="fraud").
+    investigation_data
+        Dict[str, str] keyed by investigation target name (the 6 canonical
+        targets), already rendered to text.
+    profile, campaign, landing_page
+        The auxiliary data structures, returned in case the caller wants to
+        register them on a GeneratedEpisode.
+    """
+    template = _category_to_fraud_template(category)
+
+    ad = Ad(
+        ad_id=ad_id,
+        ad_copy=ad_copy.strip()[:2000] if ad_copy else template.ad_copies[0],
+        category=category,
+        targeting_summary=(
+            targeting_summary.strip()[:512]
+            if targeting_summary
+            else template.targeting_hints[0]
+        ),
+        initial_risk_signals=list(template.risk_signals),
+        ground_truth_label="fraud",
+        fraud_type=template.fraud_type or "fraudster_proposal",
+        severity=template.severity if template.severity > 0 else 0.6,
+        difficulty=template.difficulty,
+    )
+
+    profile = generate_advertiser_profile(rng, ad_id, is_fraud=True)
+    campaign = _generate_campaign_profile(rng, ad, is_fraud=True)
+    landing_page = generate_landing_page(rng, ad_id, is_fraud=True, fraud_type=ad.fraud_type)
+
+    if landing_page_blurb:
+        from dataclasses import replace
+        landing_page = replace(
+            landing_page,
+            content_summary=landing_page_blurb.strip()[:2000],
+        )
+
+    siblings = list(existing_ads or [])
+    siblings.append(ad)
+
+    investigation_data: Dict[str, str] = {
+        "advertiser_history": profile.to_investigation_text(),
+        "landing_page": landing_page.to_investigation_text(),
+        "payment_method": _generate_payment_investigation(
+            rng, profile, ad_id, ad_to_rings={}, fraud_rings=[]
+        ),
+        "targeting_overlap": _generate_targeting_investigation(
+            rng, ad, siblings, ad_to_rings={}, fraud_rings=[]
+        ),
+        "creative_similarity": _generate_creative_investigation(
+            rng, ad, siblings, ad_to_rings={}, fraud_rings=[]
+        ),
+        "campaign_structure": _generate_campaign_investigation(
+            rng, ad, campaign, profile, ad_to_rings={}, fraud_rings=[]
+        ),
+    }
+
+    return ad, investigation_data, profile, campaign, landing_page

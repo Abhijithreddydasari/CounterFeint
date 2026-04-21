@@ -1,20 +1,67 @@
-__pycache__
+# Build / cache artifacts
+__pycache__/
+**/__pycache__/
 *.pyc
 *.pyo
-.git
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# Virtual environments (CI / local — never baked into images)
+.venv/
+venv/
+env/
+
+# Version control metadata (not needed inside the image)
+.git/
 .gitignore
-.venv
-*.egg-info
-.pytest_cache
-.mypy_cache
-.ruff_cache
-outputs/
-convo_logging/
-tests/
+
+# Secrets / local env files — never bake these into an image
 .env
 .env.*
-*.log
-*.md
-!README.md
-Review.md
+*.pem
+*.key
+secrets/
+
+# IDE / editor scratch
+.vscode/
+.idea/
+.cursor/
+*.swp
+*.swo
+
+# Local-only runtime artifacts — the image should not ship these
+convo_logging/
 baseline_scores.json
+baseline_scores_r2.json
+reward_audit/
+
+# Build artifacts we don't want in the image
+uv.lock
+
+# Tests + dev notes — not needed for a production image
+tests/
+*_tmp_*.py
+_tmp_*.py
+_tmp_*.ps1
+_tmp_*.txt
+_tmp_*.md
+*.draft.md
+notes/
+
+# Large / generated data
+data_cache/
+*.sqlite
+*.db
+
+# OS cruft
+.DS_Store
+Thumbs.db
