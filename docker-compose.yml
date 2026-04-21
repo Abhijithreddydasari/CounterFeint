@@ -1,0 +1,44 @@
+############################################################
+# CounterFeint FraudArena — local / demo compose.
+#
+# Usage (from this directory):
+#
+#     docker compose up --build
+#     curl http://localhost:8000/api/v1/info
+#     curl http://localhost:8000/api/v1/health
+#     open http://localhost:8000/docs
+#
+# Override port:
+#     COUNTERFEINT_PORT=9090 docker compose up --build
+############################################################
+
+services:
+  counterfeint:
+    image: counterfeint:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_SHA: ${COUNTERFEINT_BUILD_SHA:-dev}
+        BUILD_TIME: ${COUNTERFEINT_BUILD_TIME:-dev}
+    container_name: counterfeint
+    restart: unless-stopped
+    ports:
+      - "${COUNTERFEINT_PORT:-8000}:8000"
+    environment:
+      ENABLE_WEB_INTERFACE: "false"
+      COUNTERFEINT_ENV_URL: "http://127.0.0.1:8000"
+      # LLM credentials — only needed for single-agent R1 baseline runs.
+      API_BASE_URL: "${API_BASE_URL:-}"
+      MODEL_NAME: "${MODEL_NAME:-}"
+      HF_TOKEN: "${HF_TOKEN:-}"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys,urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3); sys.exit(0 if r.status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

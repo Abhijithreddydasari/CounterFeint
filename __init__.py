@@ -1,29 +1,80 @@
 """
-CounterFeint - Ad Fraud Investigation Environment for OpenEnv.
+CounterFeint — Multi-Agent Ad Fraud Investigation Environment for OpenEnv.
 
-A real-world simulation where an AI agent investigates a queue of ads
-for fraud, making sequential investigation and verdict decisions under
-a limited action budget.
+Round 2 introduces a three-agent FraudArena:
 
-Example:
+    Fraudster     proposes / mutates ads to sneak past review
+    Investigator  investigates ads and renders verdicts
+    Auditor       audits the trace post-hoc for miscalibration or gibberish
+
+All three agents share one environment instance per match and interact via
+WebSockets on role-specific routes (/ws/fraudster, /ws/investigator, /ws/auditor).
+
+Example (three-agent):
+
+    >>> from counterfeint import MatchClient, FraudsterAction
+    >>> import asyncio
+    >>> async def demo():
+    ...     async with MatchClient("http://localhost:8000") as match:
+    ...         await match.reset(seed=42, task_id="task_1")
+    ...         await match.fraudster.step(FraudsterAction(
+    ...             action_type="propose_ad",
+    ...             ad_copy="Free iPhone - tap here!",
+    ...             category="fake_giveaway",
+    ...         ))
+    ...         state = await match.state()
+    ...         print(state.phase, state.grader_score)
+    >>> asyncio.run(demo())
+
+Example (single-agent legacy):
+
     >>> from counterfeint import AdFraudEnv, AdReviewAction
-    >>>
     >>> with AdFraudEnv(base_url="http://localhost:8000").sync() as env:
-    ...     result = env.reset(seed=42, task_id="task_1")
-    ...     result = env.step(AdReviewAction(
-    ...         action_type="investigate",
-    ...         ad_id="ad_001",
-    ...         investigation_target="landing_page",
-    ...     ))
-    ...     print(result.observation.feedback)
+    ...     env.reset(seed=42, task_id="task_1")
 """
 
-from .client import AdFraudEnv
-from .models import AdFraudState, AdReviewAction, AdReviewObservation
+from .client import (
+    AdFraudEnv,
+    AuditorClient,
+    FraudsterClient,
+    InvestigatorClient,
+    MatchClient,
+    MultiAgentProtocolError,
+)
+from .models import (
+    AdFraudState,
+    AdReviewAction,
+    AdReviewObservation,
+    AuditFlag,
+    AuditorAction,
+    AuditorObservation,
+    AuditReport,
+    FraudsterAction,
+    FraudsterObservation,
+    InvestigatorAction,
+    InvestigatorObservation,
+    InvestigatorState,
+    RefereeState,
+)
 
 __all__ = [
     "AdFraudEnv",
+    "AdFraudState",
     "AdReviewAction",
     "AdReviewObservation",
-    "AdFraudState",
+    "AuditFlag",
+    "AuditorAction",
+    "AuditorClient",
+    "AuditorObservation",
+    "AuditReport",
+    "FraudsterAction",
+    "FraudsterClient",
+    "FraudsterObservation",
+    "InvestigatorAction",
+    "InvestigatorClient",
+    "InvestigatorObservation",
+    "InvestigatorState",
+    "MatchClient",
+    "MultiAgentProtocolError",
+    "RefereeState",
 ]
