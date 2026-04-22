@@ -44,12 +44,21 @@ try:
     )
     from ..data.episode_loader import extend_episode_with_proposal
     from ..data.tool_registry import INVESTIGATION_TARGETS, InvestigationToolRegistry
+    from ..graders.auditor_track_a import (
+        investigator_audit_score as track_a_score,
+        run_track_a,
+    )
     from ..graders.base_grader import (
         EpisodeRecord,
         LinkResult,
         VerdictResult,
         grade_episode,
     )
+    from ..graders.multi_agent_rewards import (
+        RewardInputs,
+        compute_episode_rewards,
+    )
+    from ..graders.plausibility_score import compute_queue_plausibility
     from ..models import (
         AdFraudState,
         AdReviewAction,
@@ -72,12 +81,21 @@ except ImportError:
     )
     from data.episode_loader import extend_episode_with_proposal
     from data.tool_registry import INVESTIGATION_TARGETS, InvestigationToolRegistry
+    from graders.auditor_track_a import (
+        investigator_audit_score as track_a_score,
+        run_track_a,
+    )
     from graders.base_grader import (
         EpisodeRecord,
         LinkResult,
         VerdictResult,
         grade_episode,
     )
+    from graders.multi_agent_rewards import (
+        RewardInputs,
+        compute_episode_rewards,
+    )
+    from graders.plausibility_score import compute_queue_plausibility
     from models import (
         AdFraudState,
         AdReviewAction,
@@ -197,6 +215,8 @@ class RefereeEnvironment(Environment[Action, Observation, RefereeState]):
         self._investigator_reward_total: float = 0.0
         self._auditor_reward_total: float = 0.0
         self._grader_score: Optional[float] = None
+        self._per_ad_plausibility: Dict[str, float] = {}
+        self._audit_ground_truth: Dict[str, int] = {}
 
         self._last_feedback: Dict[Role, str] = {
             "fraudster": "",
@@ -364,6 +384,8 @@ class RefereeEnvironment(Environment[Action, Observation, RefereeState]):
         self._investigator_reward_total = 0.0
         self._auditor_reward_total = 0.0
         self._grader_score = None
+        self._per_ad_plausibility = {}
+        self._audit_ground_truth = {}
         self._proposal_slot_to_ad_id = {}
         self._last_feedback = {
             "fraudster": (
@@ -626,17 +648,17 @@ class RefereeEnvironment(Environment[Action, Observation, RefereeState]):
             track_a_flags = [f for f in self._audit_flags if f.track == "A"]
             track_b_flags = [f for f in self._audit_flags if f.track == "B"]
 
+            # Track A/B score *defaults* come from the real graders running
+            # over the episode record — so even a dumb Auditor that submits an
+            # empty report gets a principled score.  Caller-supplied values
+            # override these (used by tests and LLM Auditors that compute
+            # their own).
+            default_a, default_b = self._compute_default_track_scores()
             investigator_score = float(
-                report_payload.get(
-                    "investigator_audit_score",
-                    max(0.0, 1.0 - 0.15 * sum(f.severity for f in track_a_flags)),
-                )
+                report_payload.get("investigator_audit_score", default_a)
             )
             fraudster_score = float(
-                report_payload.get(
-                    "fraudster_plausibility_score",
-                    max(0.0, 1.0 - 0.15 * sum(f.severity for f in track_b_flags)),
-                )
+                report_payload.get("fraudster_plausibility_score", default_b)
             )
             investigator_score = min(1.0, max(0.0, investigator_score))
             fraudster_score = min(1.0, max(0.0, fraudster_score))
@@ -664,17 +686,42 @@ class RefereeEnvironment(Environment[Action, Observation, RefereeState]):
         return self.build_auditor_observation(feedback=feedback)
 
     def _finalize_audit(self) -> None:
-        """Compute grader score, close out the match, move to `done`."""
+        """
+        Compute grader score and per-role rewards using the multi-agent reward
+        model (graders/multi_agent_rewards.py), close out the match, and
+        transition to `done`.
+        """
         if self._episode is None:
             return
 
         record = self._build_episode_record()
         self._grader_score = grade_episode(record)
 
-        if self._audit_report is not None:
-            self._fraudster_reward_total *= self._audit_report.fraudster_plausibility_score
-            self._investigator_reward_total *= self._audit_report.investigator_audit_score
-            self._auditor_reward_total = self._compute_auditor_reward(record)
+        audit_report = self._audit_report or AuditReport(
+            track_a_flags=[],
+            track_b_flags=[],
+            investigator_audit_score=1.0,
+            fraudster_plausibility_score=1.0,
+            notes="",
+        )
+
+        reward_inputs = RewardInputs(
+            record=record,
+            audit_report=audit_report,
+            fraudster_proposal_log=list(self._fraudster_log),
+            investigator_action_log=list(self._investigator_log),
+            investigation_data_seen=(
+                self._registry.to_dict() if self._registry else {}
+            ),
+            fraudster_ad_ids=list(self._proposal_slot_to_ad_id.values()),
+        )
+        rewards = compute_episode_rewards(reward_inputs)
+
+        self._fraudster_reward_total = float(rewards["fraudster"])
+        self._investigator_reward_total = float(rewards["investigator"])
+        self._auditor_reward_total = float(rewards["auditor"])
+        self._per_ad_plausibility = dict(rewards.get("per_ad_plausibility") or {})
+        self._audit_ground_truth = dict(rewards.get("audit_ground_truth") or {})
 
         global _last_grader_result
         _last_grader_result = {
@@ -690,6 +737,8 @@ class RefereeEnvironment(Environment[Action, Observation, RefereeState]):
             "fraudster_reward": self._fraudster_reward_total,
             "investigator_reward": self._investigator_reward_total,
             "auditor_reward": self._auditor_reward_total,
+            "per_ad_plausibility": self._per_ad_plausibility,
+            "audit_ground_truth": self._audit_ground_truth,
             "proposals_used": self._proposals_used,
             "end_reason": self._end_reason,
             "audit_report": (
@@ -700,17 +749,32 @@ class RefereeEnvironment(Environment[Action, Observation, RefereeState]):
         self._transition(to="done", note="audit report submitted")
         self._done = True
 
-    def _compute_auditor_reward(self, record: EpisodeRecord) -> float:
+    def _compute_default_track_scores(self) -> Tuple[float, float]:
         """
-        Phase 1 placeholder reward.  Phase 2A/B/C replaces this with the real
-        multi-dimensional Auditor reward that weighs flag precision.
+        Derive default investigator_audit_score and fraudster_plausibility_score
+        from the Track A and Track B graders.  Used when the Auditor submits
+        an empty report payload.
         """
-        if self._audit_report is None:
-            return 0.0
-        base = 0.5 * self._audit_report.investigator_audit_score
-        base += 0.5 * self._audit_report.fraudster_plausibility_score
-        penalty = 0.02 * len(self._audit_flags)
-        return max(0.0, base - penalty)
+        if self._episode is None:
+            return 1.0, 1.0
+
+        record = self._build_episode_record()
+        investigation_data_seen = (
+            self._registry.to_dict() if self._registry else {}
+        )
+        track_a_flags = run_track_a(
+            record,
+            investigator_actions=list(self._investigator_log),
+            investigation_data_seen=investigation_data_seen,
+        )
+        investigator_score = track_a_score(track_a_flags)
+
+        _per_ad, _flags, queue_plaus = compute_queue_plausibility(
+            self._fraudster_log
+        )
+        # If the Fraudster never proposed anything, plausibility doesn't
+        # apply — treat as 1.0 (no evidence the Fraudster was unrealistic).
+        return investigator_score, queue_plaus if _per_ad else 1.0
 
     def _build_episode_record(self) -> EpisodeRecord:
         """Assemble an EpisodeRecord from Investigator's view, mirroring R1."""
