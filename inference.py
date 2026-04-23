@@ -26,6 +26,7 @@ Environment variables (R1 mode):
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import logging
@@ -137,14 +138,20 @@ def log_end_r2(
     grader_score: float,
     rewards_by_role: Dict[str, float],
     end_reason: Optional[str],
+    fallback_counts: Optional[Dict[str, int]] = None,
 ) -> None:
     role_rewards = " ".join(
         f"{role}_reward={val:+.2f}" for role, val in rewards_by_role.items()
     )
+    fallback_str = ""
+    if fallback_counts:
+        fallback_str = " fallbacks=" + ",".join(
+            f"{role}:{n}" for role, n in fallback_counts.items()
+        )
     print(
         f"[END] mode=three-agent success={str(success).lower()} steps={steps} "
         f"rounds={rounds_played} score={grader_score:.2f} "
-        f"{role_rewards} end_reason={end_reason or 'unknown'}",
+        f"{role_rewards} end_reason={end_reason or 'unknown'}{fallback_str}",
         flush=True,
     )
 
@@ -683,6 +690,16 @@ async def arun_three_agent_episode(
 
     role_totals = {role: sum(vals) for role, vals in rewards_by_role.items()}
 
+    fallback_counts: Dict[str, int] = {}
+    for role, policy in (
+        ("fraudster", fraudster_policy),
+        ("investigator", investigator_policy),
+        ("auditor", auditor_policy),
+    ):
+        count = getattr(policy, "fallback_count", None)
+        if isinstance(count, int):
+            fallback_counts[role] = count
+
     if log:
         log_end_r2(
             success=success,
@@ -691,6 +708,7 @@ async def arun_three_agent_episode(
             grader_score=grader_score,
             rewards_by_role=role_totals,
             end_reason=end_reason,
+            fallback_counts=fallback_counts or None,
         )
         if elog is not None:
             elog.episode_end_r2(final_state)
@@ -702,6 +720,7 @@ async def arun_three_agent_episode(
         "steps": step_idx,
         "end_reason": end_reason,
         "rewards_by_role": role_totals,
+        "fallback_counts": fallback_counts,
         "final_state": final_state,
     }
 
@@ -734,24 +753,90 @@ def run_three_agent_episode(
     )
 
 
+def _make_policy_factories(
+    *,
+    use_llm_fraudster: bool,
+    use_llm_investigator: bool,
+) -> Dict[str, Any]:
+    """Return fraudster/investigator/auditor builder closures for an episode.
+
+    Each closure yields a **fresh** policy instance so per-episode state
+    (including ``fallback_count``) is clean between runs. Keeping the
+    import of :mod:`counterfeint.agents` inside the closure means the
+    scripted path never loads the ``openai`` client.
+    """
+
+    def _fraudster() -> Any:
+        if use_llm_fraudster:
+            try:
+                from .agents import LLMFraudster  # type: ignore[import-not-found]
+            except ImportError:
+                from counterfeint.agents import LLMFraudster  # type: ignore[no-redef]
+            return LLMFraudster()
+        return ReactiveFraudster(seed=42)
+
+    def _investigator() -> Any:
+        if use_llm_investigator:
+            try:
+                from .agents import LLMInvestigator  # type: ignore[import-not-found]
+            except ImportError:
+                from counterfeint.agents import LLMInvestigator  # type: ignore[no-redef]
+            return LLMInvestigator()
+        return ScriptedInvestigator()
+
+    return {
+        "fraudster": _fraudster,
+        "investigator": _investigator,
+        "auditor": lambda: HeuristicAuditor(),
+    }
+
+
 def run_three_agent_baseline(
     env_base_url: str = ENV_URL,
+    *,
+    use_llm_fraudster: bool = False,
+    use_llm_investigator: bool = False,
 ) -> Dict[str, Any]:
-    """Run the scripted 3-agent baseline across all three task configurations."""
+    """Run the 3-agent baseline across task_1..task_3.
+
+    When ``use_llm_fraudster`` or ``use_llm_investigator`` is set, the
+    corresponding role is replaced with its LLM-backed counterpart from
+    :mod:`counterfeint.agents`. The other roles stay scripted so training
+    runs against a fixed adversary.
+    """
+    factories = _make_policy_factories(
+        use_llm_fraudster=use_llm_fraudster,
+        use_llm_investigator=use_llm_investigator,
+    )
+
+    baseline_type = "three-agent-" + "-".join(
+        [
+            "llmfraud" if use_llm_fraudster else "scriptedfraud",
+            "llminv" if use_llm_investigator else "scriptedinv",
+        ]
+    )
+
     results: Dict[str, Any] = {}
     for task_id in ("task_1", "task_2", "task_3"):
-        logger.info("Running 3-agent baseline for %s...", task_id)
+        logger.info("Running %s for %s...", baseline_type, task_id)
         try:
             task_result = run_three_agent_episode(
-                task_id, seed=42, env_base_url=env_base_url,
+                task_id,
+                seed=42,
+                env_base_url=env_base_url,
+                fraudster_policy=factories["fraudster"](),
+                investigator_policy=factories["investigator"](),
+                auditor_policy=factories["auditor"](),
             )
             results[task_id] = task_result
             logger.info("  %s score: %.3f", task_id, task_result["grader_score"])
+            if task_result.get("fallback_counts"):
+                logger.info("  %s fallbacks: %s", task_id, task_result["fallback_counts"])
         except Exception as e:
             logger.error("  %s failed: %s", task_id, e)
             results[task_id] = {"task_id": task_id, "grader_score": 0.0, "error": str(e)}
     return {
-        "baseline_type": "three-agent-scripted",
+        "baseline_type": baseline_type,
         "seed": 42,
         "tasks": results,
     }
@@ -760,6 +845,30 @@ def run_three_agent_baseline(
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+
+def _build_cli_parser() -> argparse.ArgumentParser:
+    """argparse for three-agent LLM overrides.
+
+    The R1 single-agent path is unchanged — it still takes zero CLI args,
+    relying entirely on ``COUNTERFEINT_MODE`` + HF_TOKEN env vars. These
+    flags ONLY affect three-agent mode and default to False (scripted
+    Fraudster + scripted Investigator, i.e. the existing baseline).
+    """
+    parser = argparse.ArgumentParser(
+        description="CounterFeint three-agent inference driver"
+    )
+    parser.add_argument(
+        "--llm-fraudster",
+        action="store_true",
+        help="Swap the scripted ReactiveFraudster for counterfeint.agents.LLMFraudster",
+    )
+    parser.add_argument(
+        "--llm-investigator",
+        action="store_true",
+        help="Swap the scripted ScriptedInvestigator for counterfeint.agents.LLMInvestigator",
+    )
+    return parser
 
 
 def main() -> None:
@@ -776,12 +885,30 @@ def main() -> None:
         scores = run_baseline(env_base_url=ENV_URL)
         output_path = Path(__file__).resolve().parent / "baseline_scores.json"
     elif MODE == "three-agent":
+        args = _build_cli_parser().parse_args()
+        llm_note = []
+        if args.llm_fraudster:
+            llm_note.append("LLMFraudster")
+        if args.llm_investigator:
+            llm_note.append("LLMInvestigator")
+        descriptor = " + ".join(llm_note) if llm_note else "scripted only"
         print(
-            f"Running R2 three-agent scripted baseline against {ENV_URL}...",
+            f"Running R2 three-agent baseline against {ENV_URL} ({descriptor})...",
             file=sys.stderr,
         )
-        scores = run_three_agent_baseline(env_base_url=ENV_URL)
-        output_path = Path(__file__).resolve().parent / "baseline_scores_r2.json"
+        scores = run_three_agent_baseline(
+            env_base_url=ENV_URL,
+            use_llm_fraudster=args.llm_fraudster,
+            use_llm_investigator=args.llm_investigator,
+        )
+        suffix = ""
+        if args.llm_fraudster:
+            suffix += "_llmfraud"
+        if args.llm_investigator:
+            suffix += "_llminv"
+        output_path = (
+            Path(__file__).resolve().parent / f"baseline_scores_r2{suffix}.json"
+        )
     else:
         print(
             f"Unknown COUNTERFEINT_MODE={MODE!r}; expected 'single-agent' or 'three-agent'.",

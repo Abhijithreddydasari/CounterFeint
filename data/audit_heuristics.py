@@ -110,6 +110,11 @@ PCT_RE = re.compile(r"\d{1,3}\s?%")
 REGISTRAR_RE = re.compile(
     r"\b(njalla|epik|namesilo|godaddy|cloudflare|tucows)\b", re.IGNORECASE
 )
+# Meta policy citation IDs look like ``FSDP-IF-03`` / ``AS-HC-07`` / ``CH-CIB-01``.
+# Treating them as evidence tokens means rationales grounded in Meta's public
+# transparency taxonomy get credit from Track A even when investigation
+# findings don't happen to share the same tokens.
+META_CITATION_RE = re.compile(r"\b[A-Z]{2,5}-[A-Z]{2,3}-\d{2,3}\b")
 
 _EVIDENCE_REGEXES: Tuple[re.Pattern[str], ...] = (
     PAYMENT_ID_RE,
@@ -120,7 +125,15 @@ _EVIDENCE_REGEXES: Tuple[re.Pattern[str], ...] = (
     CURRENCY_RE,
     PCT_RE,
     REGISTRAR_RE,
+    META_CITATION_RE,
 )
+
+
+def has_meta_policy_citation(text: str) -> bool:
+    """True if the text contains a Meta-style policy citation like FSDP-IF-03."""
+    if not text:
+        return False
+    return bool(META_CITATION_RE.search(text))
 
 
 def extract_evidence_tokens(text: str) -> List[str]:

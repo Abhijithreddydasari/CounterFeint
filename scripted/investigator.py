@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Set
 
+from ..data.meta_policy_taxonomy import citation_blurb_for, is_legit_category
 from ..models import AdReviewAction
 from ._base import PolicyBase
 
@@ -85,16 +86,21 @@ class ScriptedInvestigator(PolicyBase):
                 ),
             )
 
-        verdict, confidence, why = self._decide_verdict(ad_id, observation)
+        verdict, confidence, why, category = self._decide_verdict(ad_id, observation)
         self._verdicted.add(ad_id)
+
+        rationale = (
+            f"ScriptedInvestigator: {verdict} {ad_id} (conf={confidence:.2f}). {why}"
+        )
+        if verdict == "reject" and not is_legit_category(category):
+            rationale = f"{rationale} {citation_blurb_for(category)}"
+
         return AdReviewAction(
             action_type="verdict",
             ad_id=ad_id,
             verdict=verdict,
             confidence=confidence,
-            rationale=(
-                f"ScriptedInvestigator: {verdict} {ad_id} (conf={confidence:.2f}). {why}"
-            ),
+            rationale=rationale,
         )
 
     def _decide_verdict(self, ad_id: str, observation: Dict[str, Any]):
@@ -126,10 +132,20 @@ class ScriptedInvestigator(PolicyBase):
             legit = True
 
         if suspicious and not legit:
-            return "reject", 0.85, "; ".join(reasons) or "multiple fraud markers"
+            return (
+                "reject",
+                0.85,
+                "; ".join(reasons) or "multiple fraud markers",
+                category,
+            )
         if legit and not suspicious:
-            return "approve", 0.8, "; ".join(reasons) or "legit markers present"
-        return "escalate", 0.5, "ambiguous signals; escalating"
+            return (
+                "approve",
+                0.8,
+                "; ".join(reasons) or "legit markers present",
+                category,
+            )
+        return "escalate", 0.5, "ambiguous signals; escalating", category
 
     def _extract_category(
         self, ad_info: str, queue_meta: Dict[str, Any], ad_id: str

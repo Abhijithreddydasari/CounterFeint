@@ -28,6 +28,27 @@ _COMMON_TARGETING_SEGMENTS = [
 ]
 
 
+# Curriculum escalation category pools. `_TASK_1_FRAUD_POOL` is the novice
+# fraudster's toolkit (only two obvious scam templates + legit camouflage),
+# `_TASK_2_FRAUD_POOL` adds mid-tier deceptive patterns, and `task_3` uses
+# the server-side default which includes the network_* ring categories.
+_LEGIT_CAMOUFLAGE = ("ecommerce", "saas", "local_service", "education", "fitness")
+
+_TASK_1_ALLOWED_CATEGORIES: List[str] = list(_LEGIT_CAMOUFLAGE) + [
+    "fake_giveaway",
+    "miracle_cure",
+]
+
+_TASK_2_ALLOWED_CATEGORIES: List[str] = _TASK_1_ALLOWED_CATEGORIES + [
+    "counterfeit_goods",
+    "advance_fee",
+    "fake_crypto",
+    "celebrity_endorsement_fraud",
+    "clone_brand",
+    "gray_area_supplements",
+]
+
+
 @dataclass
 class TaskConfig:
     task_id: str
@@ -42,6 +63,12 @@ class TaskConfig:
     n_fraud_rings: int
     allowed_difficulties: List[str]
     description: str
+
+    max_rounds: Optional[int] = None
+    max_proposals: Optional[int] = None
+    max_fraudster_actions_per_turn: Optional[int] = None
+    max_investigator_actions_per_turn: Optional[int] = None
+    allowed_fraud_categories: Optional[List[str]] = None
 
 
 TASK_CONFIGS: Dict[str, TaskConfig] = {
@@ -60,8 +87,14 @@ TASK_CONFIGS: Dict[str, TaskConfig] = {
         description=(
             "Learn the investigation loop. Queue of 5 ads with obviously "
             "fraudulent or clearly legitimate signals. Generous budget of 25 "
-            "actions (5 per ad)."
+            "actions (5 per ad). Novice Fraudster: only fake-giveaway and "
+            "miracle-cure templates allowed."
         ),
+        max_rounds=4,
+        max_proposals=5,
+        max_fraudster_actions_per_turn=3,
+        max_investigator_actions_per_turn=6,
+        allowed_fraud_categories=_TASK_1_ALLOWED_CATEGORIES,
     ),
     "task_2": TaskConfig(
         task_id="task_2",
@@ -78,8 +111,15 @@ TASK_CONFIGS: Dict[str, TaskConfig] = {
         description=(
             "Triage under budget constraints. Mix of legit ads, sophisticated "
             "scams, and gray-area cases. 12 ads but only 30 actions (~2.5 per ad). "
-            "Agent must prioritize which ads to investigate deeply."
+            "Agent must prioritize which ads to investigate deeply. "
+            "Mid-tier Fraudster: adds counterfeit, clone-brand, advance-fee, "
+            "crypto, celebrity-endorsement, and gray-area supplement templates."
         ),
+        max_rounds=4,
+        max_proposals=6,
+        max_fraudster_actions_per_turn=3,
+        max_investigator_actions_per_turn=6,
+        allowed_fraud_categories=_TASK_2_ALLOWED_CATEGORIES,
     ),
     "task_3": TaskConfig(
         task_id="task_3",
@@ -98,8 +138,15 @@ TASK_CONFIGS: Dict[str, TaskConfig] = {
             "hidden fraud networks using varied topologies (cliques, chains, "
             "hub-and-spoke). Budget of 35 actions (~1.75 per ad). Ring member "
             "ads look borderline individually — the agent must cross-reference "
-            "investigation data across ads to detect shared signals."
+            "investigation data across ads to detect shared signals. "
+            "Sophisticated Fraudster: 5 rounds, 7 proposals, full category "
+            "palette including network_* ring templates."
         ),
+        max_rounds=5,
+        max_proposals=7,
+        max_fraudster_actions_per_turn=3,
+        max_investigator_actions_per_turn=7,
+        allowed_fraud_categories=None,
     ),
 }
 

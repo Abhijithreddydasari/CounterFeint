@@ -25,6 +25,7 @@ from ..data.audit_heuristics import (
     count_citations_matching_findings,
     count_phrase_hits,
     extract_evidence_tokens,
+    has_meta_policy_citation,
     hash_ad_pair,
     severity_slice,
 )
@@ -164,7 +165,10 @@ def rationale_citation_audit(
             continue
 
         hits = count_citations_matching_findings(rationale, findings)
-        if hits < CITATION_MIN_TOKENS:
+        if hits < CITATION_MIN_TOKENS and not has_meta_policy_citation(rationale):
+            # Meta policy citations (e.g. "FSDP-IF-03") are self-grounding even
+            # when they don't textually match the findings, so we skip the flag
+            # if the rationale explicitly cites Meta's published taxonomy.
             flags.append(
                 AuditFlag(
                     track="A",

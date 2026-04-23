@@ -526,9 +526,18 @@ class InvestigatorEnvironment(
                         meta_lines.append("Flag: New account (< 30 days)")
                 context_meta = "\n".join(meta_lines)
 
+                from ..data.meta_policy_taxonomy import lookup as _meta_lookup
+
+                policy_entry = _meta_lookup(ad.category)
+                meta_policy_line = (
+                    f"Meta policy lens: {policy_entry.citation_id} — "
+                    f"{policy_entry.section} > {policy_entry.subsection}"
+                )
+
                 current_ad_info = (
                     f"=== Ad in Focus: {ad.ad_id} ===\n"
                     f"Category: {ad.category}\n"
+                    f"{meta_policy_line}\n"
                     f"Ad copy: \"{ad.ad_copy}\"\n"
                     f"Targeting: {ad.targeting_summary}\n"
                     f"Initial risk signals: {signals}\n"
