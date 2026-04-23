@@ -48,8 +48,8 @@ class AdReviewAction(Action):
             "landing_page",
             "payment_method",
             "targeting_overlap",
-            "creative_similarity",
             "campaign_structure",
+            "policy_classifier",
         ]
     ] = Field(None, description="What to investigate (required for action_type='investigate')")
 

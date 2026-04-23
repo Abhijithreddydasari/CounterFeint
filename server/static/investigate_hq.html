@@ -416,8 +416,8 @@
                 <option value="landing_page">landing_page</option>
                 <option value="payment_method">payment_method</option>
                 <option value="targeting_overlap">targeting_overlap</option>
-                <option value="creative_similarity">creative_similarity</option>
                 <option value="campaign_structure">campaign_structure</option>
+                <option value="policy_classifier">policy_classifier</option>
               </select>
             </div>
             <div class="form-group hidden" id="grp-verdict">
@@ -463,14 +463,14 @@
 
 <script>
 const API = '';
-const TARGETS = ['advertiser_history','landing_page','payment_method','targeting_overlap','creative_similarity','campaign_structure'];
+const TARGETS = ['advertiser_history','landing_page','payment_method','targeting_overlap','campaign_structure','policy_classifier'];
 const TARGET_LABELS = {
   advertiser_history: 'ADVERTISER',
   landing_page: 'LANDING PAGE',
   payment_method: 'PAYMENT',
   targeting_overlap: 'TARGETING',
-  creative_similarity: 'CREATIVE',
-  campaign_structure: 'CAMPAIGN'
+  campaign_structure: 'CAMPAIGN',
+  policy_classifier: 'POLICY (LLAMA GUARD)'
 };
 const FINDING_RE = /^\[(ad_\d+)\s*\/\s*([a-z_]+)\]/;
 

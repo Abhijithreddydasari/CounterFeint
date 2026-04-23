@@ -49,7 +49,7 @@ class TestDeterminism:
         ep = generate_episode(seed=42, task_id="task_2")
         expected_targets = [
             "advertiser_history", "landing_page", "payment_method",
-            "targeting_overlap", "creative_similarity", "campaign_structure",
+            "targeting_overlap", "campaign_structure",
         ]
         for ad in ep.ads:
             assert ad.ad_id in ep.investigation_data
@@ -85,12 +85,6 @@ class TestNoExplicitCrossAdReferences:
         for ad_id, inv in ep.investigation_data.items():
             text = inv["targeting_overlap"]
             assert "HIGH OVERLAP detected with:" not in text
-
-    def test_creative_investigation_no_cross_refs(self):
-        ep = generate_episode(seed=42, task_id="task_3")
-        for ad_id, inv in ep.investigation_data.items():
-            text = inv["creative_similarity"]
-            assert "STRONG SIMILARITY detected with:" not in text
 
     def test_campaign_investigation_no_cross_refs(self):
         ep = generate_episode(seed=42, task_id="task_3")

@@ -35,8 +35,10 @@ from counterfeint.graders.multi_agent_rewards import (
     FRAUDSTER_UNREALISTIC_PENALTY,
     INVESTIGATOR_INCONSISTENCY_PENALTY,
     INVESTIGATOR_RATIONALE_BONUS,
+    RewardCache,
     RewardInputs,
     auditor_reward,
+    build_reward_cache,
     compute_auditor_ground_truth,
     compute_episode_rewards,
     fraudster_reward,
@@ -316,13 +318,25 @@ class TestComputeAuditorGroundTruth:
 
 
 class TestFraudsterReward:
-    def test_gibberish_zero_reward(self) -> None:
-        """A queue of pure gibberish ads yields a non-positive reward — even
-        if the Investigator doesn't reject them, plausibility * severity ≈ 0
-        and every ad adds an unrealistic penalty via Track B flags."""
-        proposals = [
+    def test_gibberish_reward_strictly_less_than_clean(self) -> None:
+        """Gibberish queue earns strictly less than a clean queue of the
+        same severity (plausibility is the single realism gate after the
+        cleanup)."""
+        gibberish = [
             mk_gibberish_propose("ad_001", slot_index=0),
             mk_gibberish_propose("ad_002", slot_index=1),
+        ]
+        clean = [
+            mk_propose(
+                "ad_001",
+                "Free shipping on verified artisan coffee beans, 30-day returns.",
+                slot_index=0,
+            ),
+            mk_propose(
+                "ad_002",
+                "Trusted brand loyalty rewards with a 2-year satisfaction warranty.",
+                slot_index=1,
+            ),
         ]
         record = mk_record(
             verdicts=[
@@ -334,24 +348,42 @@ class TestFraudsterReward:
                 ad_meta("ad_002", "fraud", severity=0.8),
             ],
         )
-        # Populate track_b with gibberish flags so the unrealistic penalty
-        # kicks in (in the full Referee path these come from Track B).
         report = mk_report(
             track_b=[
                 mk_flag("B", "gibberish", target_ad_id="ad_001", severity=0.9),
                 mk_flag("B", "gibberish", target_ad_id="ad_002", severity=0.9),
             ],
         )
-        reward = fraudster_reward(
+        r_gibberish = fraudster_reward(
             mk_inputs(
                 record=record,
                 audit_report=report,
-                fraudster_proposal_log=proposals,
+                fraudster_proposal_log=gibberish,
                 fraudster_ad_ids=["ad_001", "ad_002"],
             )
         )
-        assert reward <= 0.0, (
-            f"gibberish-only queue should not earn the Fraudster reward, got {reward}"
+        r_clean = fraudster_reward(
+            mk_inputs(
+                record=record,
+                fraudster_proposal_log=clean,
+                fraudster_ad_ids=["ad_001", "ad_002"],
+            )
+        )
+        assert r_gibberish < r_clean, (
+            f"gibberish reward ({r_gibberish:.3f}) must be strictly less than "
+            f"clean reward ({r_clean:.3f})"
+        )
+        # And the Track B flags in the audit_report must NOT subtract anything
+        # extra on top of plausibility — post-cleanup invariant.
+        r_gibberish_no_flags = fraudster_reward(
+            mk_inputs(
+                record=record,
+                fraudster_proposal_log=gibberish,
+                fraudster_ad_ids=["ad_001", "ad_002"],
+            )
+        )
+        assert r_gibberish == pytest.approx(r_gibberish_no_flags), (
+            "Track B flag count must not double-count with plausibility gate"
         )
 
     def test_realistic_unbanned_ad_earns_positive_reward(self) -> None:
@@ -403,8 +435,15 @@ class TestFraudsterReward:
         # Reject triggers full banned penalty; nothing unbanned offsets it.
         assert reward <= -FRAUDSTER_BANNED_PENALTY + 1e-6
 
-    def test_unrealistic_flag_increases_penalty(self) -> None:
-        """Adding a Track B flag should strictly lower the reward."""
+    def test_track_b_flag_no_longer_double_counts(self) -> None:
+        """Post-cleanup: the Fraudster reward is gated by plausibility only.
+
+        Previously a Track B flag on the AuditReport produced an *extra*
+        ``-FRAUDSTER_UNREALISTIC_PENALTY`` subtraction on top of plausibility
+        already cratering the per-ad reward.  That double-count is gone —
+        reward should be identical with or without the AuditReport flag, because
+        the flag decision is already baked into the plausibility score.
+        """
         proposals = [
             mk_propose("ad_001", "A normal product description that sounds fine.")
         ]
@@ -427,9 +466,8 @@ class TestFraudsterReward:
         )
         r_clean = fraudster_reward(inputs_clean)
         r_flagged = fraudster_reward(inputs_flagged)
-        assert r_flagged == pytest.approx(
-            r_clean - FRAUDSTER_UNREALISTIC_PENALTY
-        )
+        assert r_flagged == pytest.approx(r_clean)
+        assert FRAUDSTER_UNREALISTIC_PENALTY == pytest.approx(0.0)
 
     def test_reactive_scenario_multiple_proposals(self) -> None:
         """Fraudster proposes twice across turns; reward scales with
@@ -787,3 +825,123 @@ class TestCanonicalEpisode:
         )
         assert math.isfinite(state.investigator_reward)
         assert math.isfinite(state.auditor_reward)
+
+
+# -----------------------------------------------------------------------------
+# 7. RewardCache — single-pass plausibility
+# -----------------------------------------------------------------------------
+
+
+class TestRewardCache:
+    """The cache must collapse the 3-pass plausibility pathology to 1 pass."""
+
+    def _sample_inputs(self) -> RewardInputs:
+        proposals = [
+            mk_propose(
+                "ad_001",
+                "Reliable home delivery with verified seller and refund guarantee.",
+                slot_index=0,
+            ),
+            mk_propose(
+                "ad_002",
+                "Trusted brand accessories with 2-year warranty and free returns.",
+                slot_index=1,
+            ),
+        ]
+        record = mk_record(
+            verdicts=[
+                vr("ad_001", "approve", "fraud", confidence=0.6),
+                vr("ad_002", "reject", "fraud", confidence=0.9),
+            ],
+            ads=[
+                ad_meta("ad_001", "fraud", severity=0.8),
+                ad_meta("ad_002", "fraud", severity=0.5),
+            ],
+        )
+        return mk_inputs(
+            record=record,
+            fraudster_proposal_log=proposals,
+            fraudster_ad_ids=["ad_001", "ad_002"],
+            investigator_action_log=[
+                {"action_type": "verdict", "ad_id": "ad_001", "rationale": "r1"},
+                {"action_type": "verdict", "ad_id": "ad_002", "rationale": "r2"},
+            ],
+        )
+
+    def test_cache_is_populated_after_get(self) -> None:
+        inputs = self._sample_inputs()
+        assert inputs.cache is None
+        cache = inputs.get_or_build_cache()
+        assert isinstance(cache, RewardCache)
+        assert "ad_001" in cache.per_ad_plausibility
+        assert "ad_002" in cache.per_ad_plausibility
+        assert inputs.cache is cache
+        # Second call reuses the same instance.
+        assert inputs.get_or_build_cache() is cache
+
+    def test_build_reward_cache_matches_direct_compute(self) -> None:
+        """The cache must agree with the legacy 3-pass path."""
+        from counterfeint.graders.plausibility_score import (
+            compute_queue_plausibility,
+        )
+
+        inputs = self._sample_inputs()
+        cache = build_reward_cache(inputs.fraudster_proposal_log)
+        direct_per_ad, direct_flags, direct_q = compute_queue_plausibility(
+            inputs.fraudster_proposal_log
+        )
+        assert cache.per_ad_plausibility == direct_per_ad
+        assert cache.queue_plausibility == pytest.approx(direct_q)
+        # Flag sets should be equal under (flag_type, ad_id, note) equality.
+        def key(f):
+            return (f.track, f.flag_type, f.target_ad_id)
+
+        assert sorted(map(key, cache.track_b_flags)) == sorted(map(key, direct_flags))
+
+    def test_compute_episode_rewards_runs_queue_plausibility_once(
+        self, monkeypatch
+    ) -> None:
+        """Single-pass invariant: ``compute_queue_plausibility`` should be
+        called exactly once per ``compute_episode_rewards`` invocation.  Prior
+        to the cache refactor it was called 3×.
+        """
+        from counterfeint.graders import multi_agent_rewards as mar
+
+        calls = {"count": 0}
+        real = mar.compute_queue_plausibility
+
+        def counting_wrapper(*args, **kwargs):
+            calls["count"] += 1
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(mar, "compute_queue_plausibility", counting_wrapper)
+        inputs = self._sample_inputs()
+        _ = mar.compute_episode_rewards(inputs)
+        assert calls["count"] == 1, (
+            f"compute_queue_plausibility ran {calls['count']}× — cache not wired through"
+        )
+
+    def test_compute_episode_rewards_runs_pattern_novelty_once(
+        self, monkeypatch
+    ) -> None:
+        """The O(N²) novelty loop should fire exactly once — previously it ran
+        once per ad × 3 callers (~N × 3 total)."""
+        from counterfeint.graders import multi_agent_rewards as mar
+        from counterfeint.graders import plausibility_score as ps
+
+        calls = {"count": 0}
+        real = mar.pattern_novelty_check
+
+        def counting_wrapper(*args, **kwargs):
+            calls["count"] += 1
+            return real(*args, **kwargs)
+
+        # Patch at BOTH module bindings so an internal re-import path in
+        # plausibility_score.compute_queue_plausibility can't slip past.
+        monkeypatch.setattr(mar, "pattern_novelty_check", counting_wrapper)
+        monkeypatch.setattr(ps, "pattern_novelty_check", counting_wrapper)
+        inputs = self._sample_inputs()
+        _ = mar.compute_episode_rewards(inputs)
+        assert calls["count"] == 1, (
+            f"pattern_novelty_check ran {calls['count']}× — novelty_cache not threaded"
+        )

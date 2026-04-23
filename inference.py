@@ -211,7 +211,7 @@ For each step, you must output a single JSON action. The action schema is:
 {
   "action_type": "investigate" | "verdict" | "link_accounts",
   "ad_id": "<ad ID, e.g. ad_001>",
-  "investigation_target": "advertiser_history" | "landing_page" | "payment_method" | "targeting_overlap" | "creative_similarity" | "campaign_structure",
+  "investigation_target": "advertiser_history" | "landing_page" | "payment_method" | "targeting_overlap" | "campaign_structure" | "policy_classifier",
   "verdict": "approve" | "reject" | "escalate",
   "confidence": <float 0.0-1.0>,
   "linked_ad_id": "<other ad ID>",
@@ -232,7 +232,8 @@ Output ONLY the JSON action, no other text.
 JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
 _FINDING_BLOCK_RE = re.compile(r"\[(ad_\d+)\s*/\s*([a-z_]+)\]")
 _ANALYSIS_HEADER_RE = re.compile(
-    r"^(?:Payment Method|Targeting|Creative|Campaign Structure) Analysis for ad_\d+:$"
+    r"^(?:Payment Method|Targeting|Campaign Structure) Analysis for ad_\d+:$"
+    r"|^Llama Guard 3 Classification for ad_\d+:$"
 )
 
 

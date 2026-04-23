@@ -262,10 +262,10 @@ def generate_episode(seed: int, task_id: str = "task_1") -> GeneratedEpisode:
         inv["landing_page"] = lp.to_investigation_text()
         inv["payment_method"] = _generate_payment_investigation(rng, profile, ad.ad_id, ad_to_rings, fraud_rings)
         inv["targeting_overlap"] = _generate_targeting_investigation(rng, ad, ads, ad_to_rings, fraud_rings)
-        inv["creative_similarity"] = _generate_creative_investigation(rng, ad, ads, ad_to_rings, fraud_rings)
         inv["campaign_structure"] = _generate_campaign_investigation(
             rng, ad, campaign, profile, ad_to_rings, fraud_rings,
         )
+        inv["policy_classifier"] = _generate_policy_classifier_investigation(ad, lp)
         investigation_data[ad.ad_id] = inv
 
     return GeneratedEpisode(
@@ -443,45 +443,29 @@ def _generate_targeting_investigation(
     return "\n".join(lines)
 
 
-def _generate_creative_investigation(
-    rng: random.Random,
+def _generate_policy_classifier_investigation(
     ad: Ad,
-    all_ads: List[Ad],
-    ad_to_rings: Dict[str, List[str]],
-    fraud_rings: List[FraudRing],
+    landing_page: Optional[LandingPageData] = None,
 ) -> str:
-    """Generate creative similarity investigation text.
+    """Mock Llama Guard 3 / Purple Llama classification for the ad.
 
-    Ring members share a template hash, presented as raw data. The agent
-    must compare hashes across ads to detect reuse.
+    Wraps ``policy_classifier_data.classify_ad``.  Deterministic per ad_id
+    (seeded RNG inside the classifier), ground-truth correlated, and produces
+    the same text shape the Investigator sees for every other investigation
+    target.  See ``counterfeint/data/policy_classifier_data.py`` for the
+    category taxonomy and marker heuristics.
     """
-    lines = [
-        f"Creative Analysis for {ad.ad_id}:",
-    ]
+    from .policy_classifier_data import classify_ad
 
-    if ad.ad_id in ad_to_rings:
-        ring = next(r for r in fraud_rings if ad.ad_id in r.member_ad_ids)
-        if "creative_template" in ring.shared_signals:
-            lines.append(f"  Template hash: {ring.shared_signals['creative_template']}")
-            lines.append(f"  Image dimensions: {rng.choice(['1200x628', '1080x1080', '1200x1200'])} px")
-            lines.append(f"  Color palette hash: pal_{rng.randint(100, 999)}")
-            lines.append(f"  Text-to-image ratio: {rng.randint(18, 25)}%")
-        else:
-            lines.append(f"  Template hash: tmpl_{rng.randint(10000, 99999)}")
-            lines.append(f"  Image dimensions: {rng.choice(['1200x628', '1080x1080', '1200x1200', '600x600'])} px")
-            lines.append(f"  Text-to-image ratio: {rng.randint(10, 30)}%")
-    else:
-        lines.append(f"  Template hash: tmpl_{rng.randint(10000, 99999)}")
-        lines.append(f"  Image dimensions: {rng.choice(['1200x628', '1080x1080'])} px")
-        lines.append(f"  Text-to-image ratio: {rng.randint(8, 22)}%")
-
-    if ad.ground_truth_label == "fraud" and ad.fraud_type:
-        similarity = rng.uniform(0.3, 0.7)
-    else:
-        similarity = rng.uniform(0.0, 0.15)
-    lines.append(f"  Similarity to known scam templates: {similarity:.0%}")
-
-    return "\n".join(lines)
+    landing_text = landing_page.content_summary if landing_page is not None else ""
+    result = classify_ad(
+        ad_id=ad.ad_id,
+        ad_copy=ad.ad_copy,
+        landing_page_text=landing_text,
+        ground_truth_label=ad.ground_truth_label,
+        fraud_type=ad.fraud_type or None,
+    )
+    return result.to_investigation_text()
 
 
 _LEGIT_OBJECTIVES = ["conversions", "leads", "sales", "app_installs"]
@@ -644,12 +628,10 @@ def generate_proposal_data(
         "targeting_overlap": _generate_targeting_investigation(
             rng, ad, siblings, ad_to_rings={}, fraud_rings=[]
         ),
-        "creative_similarity": _generate_creative_investigation(
-            rng, ad, siblings, ad_to_rings={}, fraud_rings=[]
-        ),
         "campaign_structure": _generate_campaign_investigation(
             rng, ad, campaign, profile, ad_to_rings={}, fraud_rings=[]
         ),
+        "policy_classifier": _generate_policy_classifier_investigation(ad, landing_page),
     }
 
     return ad, investigation_data, profile, campaign, landing_page

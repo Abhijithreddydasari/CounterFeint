@@ -18,6 +18,7 @@ you would expect from a production ad-fraud platform:
     DELETE /api/v1/matches/{id}      force-end a match
     GET    /api/v1/leaderboard       (MOCK) agent rating league
     GET    /api/v1/metrics           Prometheus-style text metrics
+    POST   /api/v1/tools/policy_classifier  (MOCK) Llama Guard 3 / Purple Llama classification
 
 Mock endpoints always include `"mock": true` in the response so judges can
 see what is real state vs. what is a demo-shaped stub.
@@ -195,6 +196,61 @@ class ReportResponse(BaseModel):
     audit_report: Optional[Dict[str, Any]]
     rewards: Dict[str, float]
     generated_at: float
+
+
+class PolicyClassifierRequest(BaseModel):
+    ad_id: str = Field(
+        ...,
+        description=(
+            "Deterministic RNG seed. Same ad_id + same ad_copy → same output "
+            "(so judges can reproduce findings by re-curling the endpoint)."
+        ),
+    )
+    ad_copy: str = Field(..., description="Ad creative body text.")
+    landing_page_blurb: Optional[str] = Field(
+        None, description="Optional landing-page summary text — also scanned for fraud markers."
+    )
+    ground_truth_label: Optional[str] = Field(
+        None,
+        description=(
+            "Optional label for in-pipeline use ('fraud' | 'legit' | 'escalate'). "
+            "External callers should leave this unset — the classifier will "
+            "fall back to surface-marker heuristics."
+        ),
+    )
+    fraud_type: Optional[str] = Field(
+        None,
+        description=(
+            "Optional fraud_type hint (e.g. 'fake_crypto', 'counterfeit'). "
+            "Only used when ground_truth_label='fraud'."
+        ),
+    )
+
+
+class PolicyClassifierLGCategory(BaseModel):
+    code: str
+    name: str
+
+
+class PolicyClassifierFraudMarker(BaseModel):
+    code: str
+    description: str
+
+
+class PolicyClassifierResponse(BaseModel):
+    mock: bool = True
+    model: str = "llama-guard-3-8b-mock"
+    ad_id: str
+    verdict: str
+    confidence: float
+    triggered_lg_categories: List[PolicyClassifierLGCategory]
+    triggered_fraud_markers: List[PolicyClassifierFraudMarker]
+    explanation: str
+    notes: str = (
+        "Deterministic mock of Meta's Llama Guard 3 (Purple Llama) output. "
+        "Weights are not loaded — see /docs and counterfeint/data/policy_classifier_data.py "
+        "for the category taxonomy and marker heuristics."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -573,6 +629,48 @@ def build_router() -> APIRouter:
                 },
             ],
         }
+
+    @router.post(
+        "/tools/policy_classifier",
+        response_model=PolicyClassifierResponse,
+    )
+    async def policy_classifier(
+        body: PolicyClassifierRequest,
+    ) -> PolicyClassifierResponse:
+        """Mock Llama Guard 3 / Purple Llama classification endpoint.
+
+        Wraps the same ``classify_ad`` helper the InvestigatorEnvironment uses
+        when an Investigator calls ``investigate(policy_classifier, ad_id)``.
+        Deterministic per ``ad_id`` — judges can curl this endpoint with any
+        ad text to see the classifier fire live.
+        """
+        try:
+            from ..data.policy_classifier_data import classify_ad
+        except ImportError:
+            from data.policy_classifier_data import classify_ad  # type: ignore[no-redef]
+
+        result = classify_ad(
+            ad_id=body.ad_id,
+            ad_copy=body.ad_copy,
+            landing_page_text=body.landing_page_blurb or "",
+            ground_truth_label=body.ground_truth_label,
+            fraud_type=body.fraud_type,
+        )
+        payload = result.to_dict()
+        return PolicyClassifierResponse(
+            ad_id=payload["ad_id"],  # type: ignore[arg-type]
+            verdict=payload["verdict"],  # type: ignore[arg-type]
+            confidence=float(payload["confidence"]),  # type: ignore[arg-type]
+            triggered_lg_categories=[
+                PolicyClassifierLGCategory(**c)  # type: ignore[arg-type]
+                for c in payload["triggered_lg_categories"]  # type: ignore[index]
+            ],
+            triggered_fraud_markers=[
+                PolicyClassifierFraudMarker(**m)  # type: ignore[arg-type]
+                for m in payload["triggered_fraud_markers"]  # type: ignore[index]
+            ],
+            explanation=payload["explanation"],  # type: ignore[arg-type]
+        )
 
     @router.get("/metrics", response_class=Response)
     async def metrics() -> Response:
