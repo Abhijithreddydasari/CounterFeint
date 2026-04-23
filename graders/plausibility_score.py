@@ -59,6 +59,7 @@ def compute_plausibility_score(
     queue_context: Optional[Iterable[Mapping[str, Any]]] = None,
     advertiser_country: Optional[str] = None,
     weights: Optional[Mapping[str, float]] = None,
+    novelty_cache: Optional[Tuple[float, List[AuditFlag]]] = None,
 ) -> Tuple[float, List[AuditFlag]]:
     """
     Compute a single-ad plausibility score in [0, 1].
@@ -67,6 +68,11 @@ def compute_plausibility_score(
     pattern-novelty dimension as a multiplicative factor on the per-ad
     score so ad 3 of a 12-ad clone attack gets dragged down even if it
     *individually* looks plausible.
+
+    ``novelty_cache`` is the ``(score, flags)`` tuple returned by a single
+    prior ``pattern_novelty_check(queue)`` call on the same queue; passing it
+    lets callers (e.g. ``compute_queue_plausibility`` or ``build_reward_cache``)
+    avoid re-running the O(N²) Jaccard/edit-distance loop once per ad.
     """
     w = dict(DEFAULT_DIMENSION_WEIGHTS)
     if weights:
@@ -91,8 +97,11 @@ def compute_plausibility_score(
     flags.extend(f4)
     components["signal_realism"] = s4
 
-    queue = list(queue_context or [])
-    s5, f5 = pattern_novelty_check(queue) if queue else (1.0, [])
+    if novelty_cache is not None:
+        s5, f5 = novelty_cache
+    else:
+        queue = list(queue_context or [])
+        s5, f5 = pattern_novelty_check(queue) if queue else (1.0, [])
     flags.extend(f5)
     components["pattern_novelty"] = s5
 
@@ -115,6 +124,7 @@ def compute_queue_plausibility(
     *,
     country_by_ad_id: Optional[Mapping[str, str]] = None,
     weights: Optional[Mapping[str, float]] = None,
+    novelty_cache: Optional[Tuple[float, List[AuditFlag]]] = None,
 ) -> Tuple[Dict[str, float], List[AuditFlag], float]:
     """
     Compute per-ad plausibility + a queue-level aggregate.
@@ -126,6 +136,11 @@ def compute_queue_plausibility(
     queue_plausibility : float
         Mean of per-ad scores. Used by the Auditor as
         `fraudster_plausibility_score` on the AuditReport.
+
+    ``novelty_cache`` allows callers (e.g. the multi-agent reward cache) to
+    pre-compute ``pattern_novelty_check(queue)`` once and share it across all
+    downstream plausibility calls — avoiding the 3-pass pathology where the
+    O(N²) novelty loop ran once per caller × once per ad.
     """
     # The list may contain the full Fraudster action log (propose / modify /
     # skip) or a pre-filtered list of proposal dicts.  Treat anything that
@@ -139,6 +154,12 @@ def compute_queue_plausibility(
     per_ad_scores: Dict[str, float] = {}
     all_flags: List[AuditFlag] = []
 
+    if novelty_cache is None:
+        nov_score, nov_flags = (
+            pattern_novelty_check(queue) if queue else (1.0, [])
+        )
+        novelty_cache = (nov_score, nov_flags)
+
     for p in queue:
         ad_id = str(p.get("ad_id") or f"slot_{p.get('slot_index')}")
         country = None
@@ -149,6 +170,7 @@ def compute_queue_plausibility(
             queue_context=queue,
             advertiser_country=country,
             weights=weights,
+            novelty_cache=novelty_cache,
         )
         per_ad_scores[ad_id] = score
         all_flags.extend(flags)

@@ -133,8 +133,8 @@ Each ad has six investigation dimensions:
 | `landing_page` | Domain age, SSL, registrar, redirect chains, scam template similarity |
 | `payment_method` | Payment type, chargeback history, cross-account velocity |
 | `targeting_overlap` | Targeting fingerprint, audience overlap percentages |
-| `creative_similarity` | Template hash, image dimensions, scam template similarity score |
 | `campaign_structure` | Objective, bid strategy, budget/age ratio, placement distribution |
+| `policy_classifier` | Llama Guard 3 / Purple Llama mock: safe / unsafe verdict, triggered LG categories (S1–S13), TS-Fraud markers (urgency, fake authority, get-rich-quick, etc.) |
 
 **`verdict`** - render a final decision on an ad.
 

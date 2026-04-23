@@ -19,8 +19,8 @@ INVESTIGATION_TARGETS: Tuple[str, ...] = (
     "landing_page",
     "payment_method",
     "targeting_overlap",
-    "creative_similarity",
     "campaign_structure",
+    "policy_classifier",
 )
 
 

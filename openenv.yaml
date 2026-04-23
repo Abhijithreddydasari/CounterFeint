@@ -1,7 +1,47 @@
 spec_version: 1
 name: counterfeint
+description: >
+  Three-agent adversarial ad-fraud environment. A Fraudster proposes scam
+  ads into a review queue, an Investigator audits each ad with a six-tool
+  surface (advertiser_history, landing_page, payment_method, targeting_overlap,
+  campaign_structure, policy_classifier — a Llama Guard 3 / Purple Llama
+  mock), and an Auditor grades both sides with deterministic Track A
+  (reasoning quality) + Track B (plausibility) rubrics. Designed for the
+  Multi-Agent Interactions and Self-Improvement hackathon themes.
 type: space
 sdk: docker
 runtime: fastapi
 app: server.app:app
 port: 8000
+
+# --- Multi-agent / OpenEnv metadata (additive, optional) ------------------
+roles:
+  - name: fraudster
+    description: Proposes/modifies/skips ad creatives to slip fraud past the Investigator.
+  - name: investigator
+    description: Reviews queued ads, calls six investigation tools, issues verdicts.
+  - name: auditor
+    description: Oversight layer. Grades Investigator reasoning (Track A) + Fraudster plausibility (Track B). Not trained in Phase 3; retained for evaluation.
+
+themes:
+  - multi-agent-interactions
+  - self-improving-agents
+  - long-horizon-planning
+
+tags:
+  - multi-agent
+  - adversarial
+  - ads
+  - trust-and-safety
+  - self-play
+  - rubric-based
+  - llama-guard
+
+# Endpoints exposed for external judges / evaluators (see server/public_api.py).
+public_endpoints:
+  - method: GET
+    path: /api/v1/match/{match_id}
+  - method: POST
+    path: /api/v1/tools/policy_classifier
+  - method: GET
+    path: /api/v1/metrics

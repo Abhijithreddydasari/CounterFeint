@@ -17,8 +17,8 @@ deterministic (no LLM judge) and computable from the `EpisodeRecord` +
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from ..models import AuditFlag, AuditReport
 from .auditor_track_a import (
@@ -43,7 +43,12 @@ from .plausibility_score import (
 
 FRAUDSTER_PER_AD_SEVERITY_WEIGHT = 1.0   # per surviving ad, scaled by plausibility
 FRAUDSTER_BANNED_PENALTY = 1.0           # per ad Investigator rejected
-FRAUDSTER_UNREALISTIC_PENALTY = 0.5      # per "real" Track B flag
+# Deprecated as of the pre-training cleanup — the Track B flag count double-
+# counts with the plausibility gate (a gibberish ad both drags its plausibility
+# to ~0 *and* emits a Track B flag, getting subtracted twice).  Kept at 0.0 for
+# backwards compatibility with anything still importing the symbol; see
+# ROUND_2_Q5_REALISM_REWARDS_TRAINING.md §3.1 for the rationale.
+FRAUDSTER_UNREALISTIC_PENALTY = 0.0
 
 INVESTIGATOR_RATIONALE_BONUS = 0.2       # per inferred-approved rationale
 INVESTIGATOR_INCONSISTENCY_PENALTY = 0.3 # per flagged inconsistency
@@ -55,13 +60,69 @@ AUDITOR_FALSE_POSITIVE_PENALTY = 0.5
 
 
 # -----------------------------------------------------------------------------
+# Shared cache so the O(N²) Track B plausibility / novelty pipeline only runs
+# once per episode instead of 3× (fraudster_reward + auditor_ground_truth +
+# compute_episode_rewards each previously invoked compute_queue_plausibility,
+# which in turn re-ran pattern_novelty_check *per ad*).  Referee builds the
+# cache once at audit→done; downstream reward functions read from it.
+# -----------------------------------------------------------------------------
+
+
+@dataclass
+class RewardCache:
+    """Cached artefacts from a single compute_queue_plausibility pass."""
+
+    per_ad_plausibility: Dict[str, float] = field(default_factory=dict)
+    track_b_flags: List[AuditFlag] = field(default_factory=list)
+    queue_plausibility: float = 1.0
+    # Single queue-level novelty_check result; passed into every per-ad
+    # compute_plausibility_score call so the O(N²) loop runs exactly once.
+    novelty_cache: Tuple[float, List[AuditFlag]] = field(
+        default_factory=lambda: (1.0, [])
+    )
+
+
+def build_reward_cache(
+    fraudster_proposal_log: Iterable[Mapping[str, Any]],
+    *,
+    country_by_ad_id: Optional[Mapping[str, str]] = None,
+    weights: Optional[Mapping[str, float]] = None,
+) -> RewardCache:
+    """Compute queue plausibility + novelty once and bundle the results."""
+    queue = [
+        p
+        for p in fraudster_proposal_log
+        if p.get("action_type") not in ("skip",)
+    ]
+    novelty = pattern_novelty_check(queue) if queue else (1.0, [])
+    per_ad, track_b, queue_plaus = compute_queue_plausibility(
+        queue,
+        country_by_ad_id=country_by_ad_id,
+        weights=weights,
+        novelty_cache=novelty,
+    )
+    return RewardCache(
+        per_ad_plausibility=per_ad,
+        track_b_flags=track_b,
+        queue_plausibility=queue_plaus,
+        novelty_cache=novelty,
+    )
+
+
+# -----------------------------------------------------------------------------
 # Inputs
 # -----------------------------------------------------------------------------
 
 
 @dataclass
 class RewardInputs:
-    """All data the reward computer needs.  Referee builds this once at audit→done."""
+    """All data the reward computer needs.  Referee builds this once at audit→done.
+
+    ``cache`` is an optional ``RewardCache`` shared between all reward
+    computations in a single episode.  If ``None`` (e.g. unit-test callers
+    that invoke a single reward function), the reward functions build a
+    per-call cache on demand.
+    """
 
     record: EpisodeRecord
     audit_report: AuditReport
@@ -69,6 +130,13 @@ class RewardInputs:
     investigator_action_log: List[Dict[str, Any]]
     investigation_data_seen: Dict[str, Dict[str, str]]
     fraudster_ad_ids: List[str]
+    cache: Optional[RewardCache] = None
+
+    def get_or_build_cache(self) -> RewardCache:
+        """Return the shared cache, building one on-demand if absent."""
+        if self.cache is None:
+            self.cache = build_reward_cache(self.fraudster_proposal_log)
+        return self.cache
 
 
 # -----------------------------------------------------------------------------
@@ -108,9 +176,8 @@ def compute_auditor_ground_truth(inputs: RewardInputs) -> Dict[str, int]:
     ground_truth_a.extend(cross_ad_consistency_audit(inputs.record))
     ground_truth_a.extend(bias_audit(inputs.record))
 
-    per_ad_scores, ground_truth_b_flags, queue_plaus = compute_queue_plausibility(
-        inputs.fraudster_proposal_log
-    )
+    cache = inputs.get_or_build_cache()
+    ground_truth_b_flags = cache.track_b_flags
 
     gt_set = {(f.flag_type, f.target_ad_id) for f in ground_truth_a + ground_truth_b_flags}
 
@@ -162,13 +229,19 @@ def fraudster_reward(inputs: RewardInputs) -> float:
 
     reward = Σ severity_i * plausibility_i  (for each unbanned fraudster ad)
            - FRAUDSTER_BANNED_PENALTY * n_banned
-           - FRAUDSTER_UNREALISTIC_PENALTY * n_track_b_flags
+
+    Note: the old ``FRAUDSTER_UNREALISTIC_PENALTY * n_track_b_flags`` term was
+    removed in the pre-training cleanup — Track B flag counts double-counted
+    with the plausibility gate.  Plausibility is now the single realism
+    chokepoint (gibberish ads collapse plaus_i → 0 so the first term already
+    zeroes-out survival credit).
     """
     severity_by_ad: Dict[str, float] = {}
     for meta in inputs.record.ads_metadata:
         severity_by_ad[meta.get("ad_id", "")] = float(meta.get("severity", 0.5) or 0.5)
 
-    per_ad_plaus, _, _ = compute_queue_plausibility(inputs.fraudster_proposal_log)
+    cache = inputs.get_or_build_cache()
+    per_ad_plaus = cache.per_ad_plausibility
 
     verdict_by_ad = {v.ad_id: v.verdict for v in inputs.record.verdicts}
 
@@ -190,9 +263,6 @@ def fraudster_reward(inputs: RewardInputs) -> float:
         reward += FRAUDSTER_PER_AD_SEVERITY_WEIGHT * sev * plaus
 
     reward -= FRAUDSTER_BANNED_PENALTY * len(banned)
-
-    n_track_b = len(inputs.audit_report.track_b_flags)
-    reward -= FRAUDSTER_UNREALISTIC_PENALTY * n_track_b
 
     return reward
 
@@ -271,15 +341,22 @@ def compute_episode_rewards(inputs: RewardInputs) -> Dict[str, float]:
         "per_ad_plausibility":  dict,     # ad_id -> plausibility
         "audit_ground_truth":  dict,      # true_*/false_* counters
       }
+
+    Builds a single ``RewardCache`` shared across all reward computations, so
+    ``compute_queue_plausibility`` and ``pattern_novelty_check`` each run
+    exactly once per episode (the pre-cleanup version ran them 3× + O(N) per
+    caller).
     """
+    # Prime the shared cache once, on the Inputs object.
+    inputs.get_or_build_cache()
+
     gt = compute_auditor_ground_truth(inputs)
-    per_ad_plaus, _, _ = compute_queue_plausibility(inputs.fraudster_proposal_log)
     return {
         "fraudster": fraudster_reward(inputs),
         "investigator": investigator_reward(inputs),
         "auditor": auditor_reward(inputs, ground_truth_counts=gt),
         "grader_score": grade_episode(inputs.record),
-        "per_ad_plausibility": per_ad_plaus,
+        "per_ad_plausibility": inputs.cache.per_ad_plausibility if inputs.cache else {},
         "audit_ground_truth": gt,
     }
 
@@ -294,8 +371,10 @@ __all__ = [
     "FRAUDSTER_UNREALISTIC_PENALTY",
     "INVESTIGATOR_INCONSISTENCY_PENALTY",
     "INVESTIGATOR_RATIONALE_BONUS",
+    "RewardCache",
     "RewardInputs",
     "auditor_reward",
+    "build_reward_cache",
     "compute_auditor_ground_truth",
     "compute_episode_rewards",
     "fraudster_reward",

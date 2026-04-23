@@ -535,7 +535,7 @@ class InvestigatorEnvironment(
                     f"{context_meta}\n"
                     f"Investigations completed: {inv_status}\n"
                     f"Available investigation targets: advertiser_history, landing_page, "
-                    f"payment_method, targeting_overlap, creative_similarity, campaign_structure"
+                    f"payment_method, targeting_overlap, campaign_structure, policy_classifier"
                 )
 
         investigation_findings = ""
