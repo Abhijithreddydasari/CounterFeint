@@ -312,3 +312,49 @@ class TestScriptedFullRun:
         assert state.end_reason in (
             "commit_final", "all_decided", "max_rounds", "investigator_done",
         )
+
+
+class TestTaskConfigCurriculum:
+    """Verify TaskConfig knobs flow into the Referee as the default curriculum."""
+
+    def test_task_1_uses_novice_fraudster_budget(self):
+        env = RefereeEnvironment()
+        env.reset_match(task_id="task_1", seed=42)
+        assert env.state.max_rounds == 4
+        assert env.state.max_proposals == 5
+        allowed = env.build_fraudster_observation().allowed_categories
+        assert "fake_giveaway" in allowed
+        assert "miracle_cure" in allowed
+        assert "counterfeit_goods" not in allowed, (
+            "Task 1 should restrict the Fraudster to easy fraud templates"
+        )
+        assert "network_crypto" not in allowed
+
+    def test_task_2_adds_mid_tier_categories(self):
+        env = RefereeEnvironment()
+        env.reset_match(task_id="task_2", seed=42)
+        assert env.state.max_proposals == 6
+        allowed = env.build_fraudster_observation().allowed_categories
+        assert "counterfeit_goods" in allowed
+        assert "fake_crypto" in allowed
+        assert "clone_brand" in allowed
+        assert "network_crypto" not in allowed, (
+            "Task 2 should not yet allow ring-level categories"
+        )
+
+    def test_task_3_opens_full_palette(self):
+        env = RefereeEnvironment()
+        env.reset_match(task_id="task_3", seed=42)
+        assert env.state.max_rounds == 5
+        assert env.state.max_proposals == 7
+        assert env._max_investigator_actions_per_turn == 7  # not surfaced in RefereeState
+        allowed = env.build_fraudster_observation().allowed_categories
+        assert "network_crypto" in allowed
+        assert "network_ecommerce" in allowed
+
+    def test_explicit_kwarg_still_overrides_task_config(self):
+        env = RefereeEnvironment()
+        env.reset_match(task_id="task_3", seed=42, max_proposals=2)
+        assert env.state.max_proposals == 2, (
+            "Explicit reset_match kwargs must still trump the task curriculum"
+        )

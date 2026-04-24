@@ -25,6 +25,10 @@ dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.0.0",
     "pytest-asyncio>=0.23.0",
+    # matplotlib is dev-only — used by counterfeint.eval_suite to render
+    # eval_plot.png for the README. Keeping it out of runtime deps keeps
+    # the Docker image slim (~30MB saved).
+    "matplotlib>=3.8.0",
 ]
 
 [project.scripts]
@@ -37,6 +41,8 @@ packages = [
     "counterfeint.data",
     "counterfeint.graders",
     "counterfeint.scripted",
+    "counterfeint.agents",
+    "counterfeint.training",
 ]
 
 [tool.setuptools.package-dir]
@@ -45,3 +51,8 @@ packages = [
 "counterfeint.data" = "data"
 "counterfeint.graders" = "graders"
 "counterfeint.scripted" = "scripted"
+"counterfeint.agents" = "agents"
+"counterfeint.training" = "training"
+
+[tool.setuptools.package-data]
+"counterfeint.data" = ["real_world_test_set.json"]

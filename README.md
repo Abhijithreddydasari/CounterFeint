@@ -222,6 +222,134 @@ Generated with `seed=42` using `meta-llama/Llama-3.1-8B-Instruct`. Reproducible 
 
 The sharp drop on Task 3 reflects the difficulty of cross-ad reasoning under tight budget - the baseline agent investigates and renders verdicts well but struggles to detect coordinated fraud rings.
 
+## Three-Agent FraudArena (R2)
+
+CounterFeint also ships a three-agent multi-policy mode where an
+adversarial **Fraudster** proposes ads, an **Investigator** reviews them
+under a budget, and an **Auditor** grades the Investigator's reasoning
+post-hoc. This adds Themes #1 (multi-agent interaction) and #4
+(self-improvement) to the original single-agent task.
+
+```
+python -m counterfeint.inference                       # scripted vs scripted vs scripted
+python -m counterfeint.inference --llm-fraudster       # adversarial LLM Fraudster (frozen)
+python -m counterfeint.inference --llm-fraudster --llm-investigator  # full LLM bench
+```
+
+The Fraudster has its own escalating curriculum (`max_proposals`,
+`allowed_fraud_categories`) that scales with task difficulty, and
+`--llm-fraudster` swaps the deterministic `ReactiveFraudster` for an
+OpenAI-compatible LLM (works with Ollama at
+`http://localhost:11434/v1`). LLM failures (timeout, bad JSON,
+validation error) silently fall back to the scripted policy and are
+counted in the `[END] ... fallbacks=fraudster:N,investigator:N`
+STDOUT line.
+
+### Self-play curriculum
+
+During training the Investigator faces a fixed 70/30 split of opponents:
+
+| Rollout share | Fraudster                                       | Why |
+|--------------:|-------------------------------------------------|-----|
+|         70 % | `ReactiveFraudster` (deterministic, programmatic) | Stable gradient signal; cheap rollouts |
+|         30 % | `LLMFraudster` (frozen Llama-3.1-8B via Ollama)  | Open-ended adversarial pressure |
+
+This avoids the "two moving targets" problem (we never co-train two
+LLMs simultaneously) while still giving the trained Investigator
+exposure to genuinely open-vocabulary fraud copy. See
+[`counterfeint/training/rollout_config.py`](training/rollout_config.py)
+for the canonical split spec.
+
+## Before vs After Training
+
+The held-out eval lane lives in
+[`counterfeint/eval_suite.py`](eval_suite.py).  It runs the
+Investigator over 30 fixed `(task_id, seed)` tuples (10 per task,
+**disjoint from training seeds**) against the stable
+`ReactiveFraudster` adversary, and writes three artefacts to
+`eval_outputs/`:
+
+```
+eval_outputs/
+├── eval_results.json   # per-episode metrics for both tags
+├── eval_summary.md     # markdown delta table (before / after / delta)
+└── eval_plot.png       # 2×2 bar chart, headline visual
+```
+
+Reproduce with:
+
+```bash
+# Pre-training baseline (scripted Investigator)
+python -m counterfeint.eval_suite --before-tag scripted --after-tag scripted_rerun
+
+# After training (programmatic, used at the end of the Colab notebook):
+python -c "from counterfeint.eval_suite import run_before_after; \
+  from counterfeint.scripted import ScriptedInvestigator; \
+  from pathlib import Path; \
+  run_before_after(before_tag='scripted', after_tag='trained_v1', \
+    before_investigator_factory=ScriptedInvestigator, \
+    after_investigator_factory=lambda: load_trained_investigator('checkpoints/v1'), \
+    out_dir=Path('eval_outputs'))"
+```
+
+![Before vs After bar chart](eval_outputs/eval_plot.png)
+
+*Bar chart compares grader score, Track A reasoning score, mean fraud
+leaks (false approvals on ground-truth fraud), and budget consumption
+across all three tasks.  The PNG above is a **placeholder** generated
+from synthetic metrics so the README rendering stays self-contained;
+the real artefact is regenerated end-to-end by every
+`run_before_after` call (final cell of
+[`training/train_investigator.ipynb`](training/train_investigator.ipynb))
+and is committed to `eval_outputs/` pre-submission. The full
+per-episode breakdown lives in
+[`eval_outputs/eval_summary.md`](eval_outputs/eval_summary.md).*
+
+Per-episode metrics tracked: `grader_score`, `track_a_score`,
+`track_b_score`, `n_fraud_leaks`, `budget_used_pct`,
+`fallback_count`, `rewards_by_role`. The `fallback_count` makes
+silent LLM degradations visible; an eval run with > 30 % fallback
+rate is treated as inconclusive.
+
+### Evaluated against Meta-CIB-modeled ads
+
+Beyond the procedurally generated tasks, every `run_before_after()`
+output also embeds a summary of a small held-out dataset
+([`counterfeint/data/real_world_test_set.json`](data/real_world_test_set.json))
+of **15 synthetic ads** authored to match the patterns described in
+Meta's published quarterly **Adversarial Threat Reports** — covering
+the Ghana DigitSol clique, the Benin Digited chain, and the
+China-Russia hub-spoke operations now wired into our network
+generator ([`counterfeint/data/network_generator.py`](data/network_generator.py)).
+
+| Case study source                       | # ads | Quarter |
+| --------------------------------------- | ----: | :------ |
+| Ghana DigitSol-style                    |     5 | Q3 2020 |
+| Benin Digited-style                     |     5 | Q1 2021 |
+| China-Russia-style hub                  |     3 | Q3 2022 |
+| Distractor (not part of any CIB ring)   |     2 | n/a     |
+
+Every ad in the holdout JSON carries:
+
+* `case_study_source`     — the Meta CIB report it descends from
+* `provenance_quarter`    — the report quarter (e.g. "Q3 2020")
+* `ring_membership`       — the synthetic ring it belongs to
+* `shared_signals`        — payment / registrar / creative fingerprints
+  shared across the ring (the ground truth the Investigator should
+  surface)
+
+The dataset is loaded only via
+[`counterfeint/data/real_world_loader.py`](data/real_world_loader.py),
+which gates every read on an explicit `confirm_eval_only=True`
+argument. Training rollouts never call the loader, so this set
+**cannot leak into training by accident** — the
+`load_real_world_holdout()` API itself enforces the holdout boundary.
+
+The 2 distractor *legit* ads (Brooklyn coffee roastery,
+Calm app trial) are intentionally included so the realism sweep
+also measures the trained Investigator's **false-positive rate** on
+benign-looking content, not just its hit rate on fraud.
+
 ## Project Structure
 
 ```
@@ -229,36 +357,58 @@ counterfeint/
 +-- __init__.py              # Package exports
 +-- client.py                # WebSocket client (extends EnvClient)
 +-- models.py                # Action, Observation, State types
-+-- inference.py             # Baseline LLM agent with mandatory stdout logging
++-- inference.py             # R1 single-agent + R2 three-agent driver
++-- eval_suite.py            # Held-out eval lane: run_before_after()
 +-- openenv.yaml             # OpenEnv manifest
 +-- pyproject.toml           # Dependencies and package config
++-- requirements-dev.txt     # Dev-only deps (pytest, matplotlib for eval_plot.png)
 +-- Dockerfile               # Multi-stage Docker build
 +-- baseline_scores.json     # Cached baseline results
++-- agents/                  # LLM-backed policy classes (R2)
+|   +-- base.py              # LLMPolicyBase: retry + timeout + scripted fallback
+|   +-- prompts.py           # FRAUDSTER_SYSTEM_PROMPT, INVESTIGATOR_SYSTEM_PROMPT
+|   +-- llm_fraudster.py     # LLMFraudster (fallback: ReactiveFraudster)
+|   +-- llm_investigator.py  # LLMInvestigator (fallback: ScriptedInvestigator)
++-- scripted/                # Deterministic baseline policies (R2)
+|   +-- fraudster.py         # Scripted, Reactive, and Gibberish (control) Fraudsters
+|   +-- investigator.py      # ScriptedInvestigator (cites Meta policy IDs)
+|   +-- auditor.py           # HeuristicAuditor (rule-based, fixed reward channel)
 +-- data/
-|   +-- ad_generator.py      # Episode generation, task configs, campaign profiles
+|   +-- ad_generator.py      # Episode generation, task configs (with Fraudster knobs)
 |   +-- advertiser_profiles.py  # Synthetic advertiser history
 |   +-- fraud_patterns.py    # Fraud + legit ad templates (easy/medium/hard)
 |   +-- landing_pages.py     # Simulated landing page investigation data
-|   +-- network_generator.py # Fraud ring topologies via networkx
+|   +-- network_generator.py # Named CIB ring topologies (Ghana / Benin / China-Russia)
+|   +-- meta_policy_taxonomy.py # Meta policy citation IDs / sections / URLs
+|   +-- real_world_test_set.json # 15-ad CIB-modeled holdout (Ghana / Benin / China-Russia)
+|   +-- real_world_loader.py  # Eval-only loader (confirm_eval_only=True gate)
+|   +-- audit_heuristics.py  # Regex helpers (incl. Meta citation IDs)
 +-- graders/
 |   +-- base_grader.py       # Shared normalization and reward logic
 |   +-- task1_grader.py      # Verdict accuracy only
 |   +-- task2_grader.py      # + calibration bonus
 |   +-- task3_grader.py      # + network detection + coverage bonus
+|   +-- auditor_track_a.py   # Investigator reasoning audit (rationales, citations)
+|   +-- auditor_track_b.py   # Fraudster ad-plausibility audit
+|   +-- multi_agent_rewards.py  # Combined reward computation
 +-- server/
 |   +-- app.py               # FastAPI app with /tasks, /baseline, /grader endpoints
 |   +-- environment.py       # Core environment (reset/step/state)
+|   +-- referee.py           # 3-agent state machine, applies TaskConfig curriculum
 |   +-- investigate_ui.py    # HTML dashboard routes (/investigate, /web redirect)
 |   +-- static/
 |       +-- investigate_hq.html  # Interactive investigation dashboard
-|   +-- requirements.txt     # Server dependencies
-|   +-- investigate_ui.py    # HTML dashboard routes (/investigate, /web redirect)
-|   +-- static/
-|       +-- investigate_hq.html  # Interactive investigation dashboard
++-- training/
+|   +-- rollout_config.py    # 70/30 (ReactiveFraudster, LLMFraudster) split spec
+|   +-- train_investigator.ipynb  # Colab scaffold; calls run_before_after at the end
 +-- tests/
-    +-- test_data_generation.py  # Determinism, cross-ref checks, decoy validation
+    +-- test_data_generation.py  # Determinism, cross-ref, decoy, CIB topology
     +-- test_environment.py      # Step logic, state tracking, anti-exploit
     +-- test_graders.py          # Score ranges, calibration, network scoring
+    +-- test_three_agent_episode.py  # Three-agent state machine + curriculum
+    +-- test_llm_agents.py       # LLMPolicyBase fallback + retry semantics
+    +-- test_eval_suite.py       # Eval-lane parser + writer round-trips
+    +-- test_meta_policy_taxonomy.py  # Citation coverage + evidence-token recognition
 ```
 
 ## API Endpoints

@@ -45,6 +45,33 @@ class TestDeterminism:
             assert len(ring.shared_signals) >= 2
             assert ring.topology in ("clique", "chain", "hub_spoke")
 
+    def test_task3_rings_carry_cib_case_studies(self):
+        """Task 3 must tag every ring with a named Meta CIB case study."""
+        from counterfeint.data.network_generator import (
+            RING_CASE_STUDIES,
+            get_ring_shared_signal_text,
+        )
+
+        ep = generate_episode(seed=42, task_id="task_3")
+        known_cases = {cs["case_name"] for cs in RING_CASE_STUDIES}
+        known_topologies = {cs["topology"] for cs in RING_CASE_STUDIES}
+
+        for ring in ep.fraud_rings:
+            assert ring.case_name in known_cases, ring.case_name
+            assert ring.provenance.startswith("Meta "), ring.provenance
+            assert ring.topology in known_topologies
+
+            text = get_ring_shared_signal_text(ring)
+            assert ring.case_name in text
+            assert "Modelled after" in text
+
+    def test_task3_rings_cover_all_three_topologies_when_possible(self):
+        """With n_fraud_rings=3, every task_3 episode should showcase one
+        clique + one chain + one hub_spoke (rotated deterministically)."""
+        ep = generate_episode(seed=42, task_id="task_3")
+        topologies = {r.topology for r in ep.fraud_rings}
+        assert topologies == {"clique", "chain", "hub_spoke"}, topologies
+
     def test_investigation_data_exists_for_all_ads(self):
         ep = generate_episode(seed=42, task_id="task_2")
         expected_targets = [

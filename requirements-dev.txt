@@ -1,0 +1,22 @@
+# Dev-only dependencies for CounterFeint.
+#
+# These are NOT required to run the environment (Dockerfile installs only
+# the runtime deps from pyproject.toml's [project.dependencies]).  They
+# are needed for:
+#
+#   - pytest:      full test suite (counterfeint/tests/*.py)
+#   - matplotlib:  rendering counterfeint/eval_suite.py's eval_plot.png
+#                  used in the README "Before vs After Training" section
+#
+# Install with:
+#
+#   pip install -r requirements-dev.txt
+#
+# …or, if you use uv / the pyproject optional-extras layer:
+#
+#   uv pip install -e ".[dev]"
+#
+pytest>=8.0.0
+pytest-cov>=4.0.0
+pytest-asyncio>=0.23.0
+matplotlib>=3.8.0

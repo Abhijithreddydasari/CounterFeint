@@ -333,25 +333,37 @@ class RefereeEnvironment(Environment[Action, Observation, RefereeState]):
         )
         self._rng = random.Random(effective_seed)
 
-        self._max_rounds = max_rounds or self.DEFAULT_MAX_ROUNDS
-        self._max_proposals = (
-            max_proposals
-            if max_proposals is not None
-            else self.DEFAULT_MAX_PROPOSALS
+        # Resolve each knob with precedence: explicit kwarg > TaskConfig curriculum > class default.
+        task_cfg = TASK_CONFIGS[self._task_id]
+
+        def _resolve(arg_value: Optional[int], cfg_attr: str, default: int) -> int:
+            if arg_value is not None:
+                return arg_value
+            cfg_val = getattr(task_cfg, cfg_attr, None)
+            return cfg_val if cfg_val is not None else default
+
+        self._max_rounds = _resolve(max_rounds, "max_rounds", self.DEFAULT_MAX_ROUNDS)
+        self._max_proposals = _resolve(
+            max_proposals, "max_proposals", self.DEFAULT_MAX_PROPOSALS
         )
-        self._max_fraudster_actions_per_turn = (
-            max_fraudster_actions_per_turn
-            or self.DEFAULT_MAX_FRAUDSTER_ACTIONS_PER_TURN
+        self._max_fraudster_actions_per_turn = _resolve(
+            max_fraudster_actions_per_turn,
+            "max_fraudster_actions_per_turn",
+            self.DEFAULT_MAX_FRAUDSTER_ACTIONS_PER_TURN,
         )
-        self._max_investigator_actions_per_turn = (
-            max_investigator_actions_per_turn
-            or self.DEFAULT_MAX_INVESTIGATOR_ACTIONS_PER_TURN
+        self._max_investigator_actions_per_turn = _resolve(
+            max_investigator_actions_per_turn,
+            "max_investigator_actions_per_turn",
+            self.DEFAULT_MAX_INVESTIGATOR_ACTIONS_PER_TURN,
         )
-        self._allowed_categories = (
-            list(allowed_categories)
-            if allowed_categories
-            else list(DEFAULT_ALLOWED_CATEGORIES)
-        )
+
+        cfg_categories = getattr(task_cfg, "allowed_fraud_categories", None)
+        if allowed_categories is not None:
+            self._allowed_categories = list(allowed_categories)
+        elif cfg_categories:
+            self._allowed_categories = list(cfg_categories)
+        else:
+            self._allowed_categories = list(DEFAULT_ALLOWED_CATEGORIES)
 
         if episode is not None:
             self._episode = episode
@@ -911,6 +923,17 @@ class RefereeEnvironment(Environment[Action, Observation, RefereeState]):
                 ],
                 "links": list(self._investigator.links),
                 "grader_score": self._grader_score,
+                "fraud_rings": [
+                    {
+                        "ring_id": ring.ring_id,
+                        "topology": ring.topology,
+                        "case_name": ring.case_name,
+                        "provenance": ring.provenance,
+                        "member_ad_ids": list(ring.member_ad_ids),
+                        "shared_signal_types": list(ring.shared_signals.keys()),
+                    }
+                    for ring in self._episode.fraud_rings
+                ],
             }
 
         return AuditorObservation(

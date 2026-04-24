@@ -1,10 +1,16 @@
 """
 Fraud network (ring) generation for Task 3 using networkx.
 
-Generates complex fraud ring topologies:
-- Simple cliques (3-5 ads fully connected)
-- Chain structures (A-B via payment, B-C via creative — transitive reasoning required)
-- Hub-and-spoke (one master account linked to satellites)
+Generates complex fraud ring topologies, each named after a published Meta
+Adversarial Threat Report (Coordinated Inauthentic Behaviour / CIB) case study:
+
+- Clique     - Ghana DigitSol-style: small troll-farm where every account
+               amplifies every other (Meta Q3 2020 Adversarial Threat Report).
+- Chain      - Benin Digited-style: relay pattern where A promotes B, B promotes
+               C, but A never directly touches C (Meta Q1 2021 Adversarial
+               Threat Report).
+- Hub-spoke  - China-Russia-style: one master account funds and controls many
+               satellite accounts (Meta Q3 2022 Adversarial Threat Report).
 
 Individual ads in a ring may look borderline; the signal is in the connections.
 Each edge in the graph carries the signal type that connects the two ads.
@@ -25,13 +31,46 @@ class FraudRing:
     member_ad_ids: List[str]
     shared_signals: Dict[str, str]  # signal_type -> shared_value
     topology: str = "clique"  # clique, chain, hub_spoke
+    case_name: str = ""       # e.g. "Ghana DigitSol-style"
+    provenance: str = ""      # e.g. "Meta Q3 2020 Adversarial Threat Report"
 
     @property
     def size(self) -> int:
         return len(self.member_ad_ids)
 
 
-_RING_TOPOLOGIES = ["clique", "chain", "hub_spoke"]
+RING_CASE_STUDIES: List[Dict[str, str]] = [
+    {
+        "topology": "clique",
+        "case_name": "Ghana DigitSol-style",
+        "provenance": "Meta Q3 2020 Adversarial Threat Report",
+        "summary": (
+            "Troll-farm ring where every account amplifies every other; "
+            "all members share payment / creative / targeting fingerprints."
+        ),
+    },
+    {
+        "topology": "chain",
+        "case_name": "Benin Digited-style",
+        "provenance": "Meta Q1 2021 Adversarial Threat Report",
+        "summary": (
+            "Relay ring where A promotes B, B promotes C, but A never directly "
+            "touches C. Transitive reasoning is required to surface the full "
+            "network."
+        ),
+    },
+    {
+        "topology": "hub_spoke",
+        "case_name": "China-Russia-style hub",
+        "provenance": "Meta Q3 2022 Adversarial Threat Report",
+        "summary": (
+            "Hub-and-spoke ring: one master advertiser funds and controls many "
+            "satellite accounts that share the master's payment and registrar."
+        ),
+    },
+]
+
+_RING_TOPOLOGIES = [cs["topology"] for cs in RING_CASE_STUDIES]
 
 _SIGNAL_POOL_KEYS = ["payment_method", "domain_registrar", "creative_template", "targeting_overlap"]
 
@@ -77,12 +116,23 @@ def generate_fraud_networks(
     for i in range(n_rings):
         if len(remaining) < 3:
             break
-        ring_size = rng.randint(3, min(5, len(remaining)))
+        # Reserve 3 ads per still-to-come ring so we always fit n_rings rings,
+        # which is what makes the "all three CIB topologies every episode"
+        # storytelling claim true at task_3.
+        remaining_rings = n_rings - i - 1
+        reserved = 3 * remaining_rings
+        budget = max(3, len(remaining) - reserved)
+        ring_size = rng.randint(3, min(5, budget, len(remaining)))
 
         members = remaining[:ring_size]
         remaining = remaining[ring_size:]
 
-        topology = rng.choice(_RING_TOPOLOGIES)
+        # Rotate through the Meta CIB case studies deterministically so that
+        # every task_3 episode showcases at least one clique, one chain, and
+        # one hub-spoke pattern when n_rings >= 3.
+        case_study = RING_CASE_STUDIES[i % len(RING_CASE_STUDIES)]
+        topology = case_study["topology"]
+
         signal_pool = _make_signal_pool(rng, i)
 
         signal_keys = list(_SIGNAL_POOL_KEYS)
@@ -98,6 +148,8 @@ def generate_fraud_networks(
             member_ad_ids=members,
             shared_signals=shared_signals,
             topology=topology,
+            case_name=case_study["case_name"],
+            provenance=case_study["provenance"],
         )
         rings.append(ring)
 
@@ -172,7 +224,14 @@ def _add_bridge_ads(
 
 def get_ring_shared_signal_text(ring: FraudRing) -> str:
     """Describe the shared signals in a ring (for grader/debug use)."""
-    lines = [f"Fraud Ring {ring.ring_id} ({ring.size} members, topology={ring.topology}):"]
+    header_tail = f"topology={ring.topology}"
+    if ring.case_name:
+        header_tail = f"{ring.case_name} {ring.topology}"
+    lines = [
+        f"Fraud Ring {ring.ring_id} ({ring.size} members, {header_tail}):"
+    ]
+    if ring.provenance:
+        lines.append(f"  Modelled after: {ring.provenance}")
     lines.append(f"  Members: {', '.join(ring.member_ad_ids)}")
     lines.append("  Shared signals:")
     for signal_type, value in ring.shared_signals.items():
