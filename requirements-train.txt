@@ -34,3 +34,10 @@ huggingface_hub>=0.26.0
 # Reuse the same eval-time deps so the final cell (`run_before_after`)
 # can render eval_plot.png from the training notebook.
 matplotlib>=3.8.0
+
+# Allow `asyncio.run()` inside Jupyter / Colab cells. CounterFeint's
+# inference.run_three_agent_episode is a sync wrapper around an async
+# core (arun_three_agent_episode); without nest_asyncio it raises
+# "asyncio.run() cannot be called from a running event loop" the moment
+# we collect rollouts from a notebook.
+nest_asyncio>=1.6.0

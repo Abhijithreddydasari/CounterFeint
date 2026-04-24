@@ -99,7 +99,7 @@ class LLMPolicyBase(PolicyBase):
         api_key: Optional[str] = None,
         temperature: float = 0.2,
         max_tokens: int = 384,
-        timeout_s: float = 5.0,
+        timeout_s: Optional[float] = None,
         retries: int = 2,
         client: Optional[Any] = None,
     ) -> None:
@@ -110,7 +110,7 @@ class LLMPolicyBase(PolicyBase):
 
         self.fallback_policy = fallback_policy
         self.model_name = model_name or os.getenv(
-            "MODEL_NAME", "meta-llama/Llama-3.2-3B-Instruct"
+            "MODEL_NAME", "Qwen/Qwen2.5-1.5B-Instruct"
         )
         self.api_base_url = api_base_url or os.getenv(
             "API_BASE_URL", "https://router.huggingface.co/v1"
@@ -118,6 +118,8 @@ class LLMPolicyBase(PolicyBase):
         self.api_key = api_key or os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
         self.temperature = float(temperature)
         self.max_tokens = int(max_tokens)
+        if timeout_s is None:
+            timeout_s = float(os.getenv("LLM_TIMEOUT_S", "120"))
         self.timeout_s = float(timeout_s)
         self.retries = int(retries)
 

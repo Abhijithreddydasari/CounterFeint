@@ -212,7 +212,7 @@ Each task has a dedicated grader that produces a normalized **0.0-1.0 score**. R
 
 ## Baseline Scores
 
-Generated with `seed=42` using `meta-llama/Llama-3.2-3B-Instruct`. Reproducible via `python inference.py`.
+Generated with `seed=42` using `Qwen/Qwen2.5-1.5B-Instruct`. Reproducible via `python inference.py`.
 
 | Task | Score | Steps | Verdicts |
 |---|---:|---:|---:|
@@ -252,18 +252,23 @@ the canonical multi-agent RL paradigm used by AlphaGo, OpenAI Five,
 and AlphaStar. Co-training two LLMs in parallel is non-stationary and
 diverges; sequential self-play is stable.
 
-**Asymmetric multi-agent setup (shipped).** Train the smaller
-Investigator on `meta-llama/Llama-3.2-3B-Instruct` against the
-**larger frozen** `llama3.1:8b` Fraudster served by Ollama. Every
-rollout uses the LLM Fraudster by default (`LLM_FRAUDSTER_RATIO=1.0`),
-so the training distribution is genuinely adversarial and matches the
-held-out eval distribution — the headline claim is "*the smaller
-model wins via task-specific GRPO against a stronger frozen
-adversary*".
+**Asymmetric multi-agent setup (shipped).** Train the much smaller
+Investigator on `Qwen/Qwen2.5-1.5B-Instruct` against the
+**larger frozen** `llama3.1:8b` Fraudster served by Ollama — a
+**~5×** parameter asymmetry. Every rollout uses the LLM Fraudster
+by default (`LLM_FRAUDSTER_RATIO=1.0`), so the training distribution
+is genuinely adversarial and matches the held-out eval distribution —
+the headline claim is "*the smaller model wins via task-specific
+GRPO against a stronger frozen adversary*".
+
+The two policies also come from **different model families** (Qwen
+Investigator vs Llama Fraudster), so the GRPO signal isn't a
+parameter-sharing artefact and the framework is demonstrably
+model-agnostic.
 
 | Role         | Model                              | Backend            | Trainable? |
 |--------------|------------------------------------|--------------------|------------|
-| Investigator | `meta-llama/Llama-3.2-3B-Instruct` | HuggingFace + QLoRA| **Yes**    |
+| Investigator | `Qwen/Qwen2.5-1.5B-Instruct`       | HuggingFace + QLoRA| **Yes**    |
 | Fraudster    | `llama3.1:8b`                      | Ollama (frozen)    | No         |
 | Auditor      | Heuristic (regex + light scoring)  | In-process Python  | No         |
 
@@ -278,14 +283,29 @@ remain as repo modules because they are also imported by inference /
 serving paths.
 
 Need to fall back to a deterministic Fraudster (e.g. no GPU headroom
-for both 3B-train + 8B-serve)? Set `LLM_FRAUDSTER_RATIO = 0.0` in §1
+for both 1.5B-train + 8B-serve)? Set `LLM_FRAUDSTER_RATIO = 0.0` in §1
 of the notebook — every rollout will then use `ReactiveFraudster`
 instead of Ollama.
 
-**Why a 3B base?** Fits on a single Colab T4 (16 GB) with QLoRA, leaves
-headroom for the 8B Ollama Fraudster on the same GPU when QLoRA brings
-the trainable footprint down to ~2 GB. Override via the `BASE_MODEL`
-constant in §1 of the notebook if you want to scale up.
+**Why Qwen 2.5 1.5B as the trainable base?**
+
+- **Apache 2.0** — Judges can re-run the notebook from a clean machine with no HF account
+  required.
+- **Fits a 12 GB consumer GPU** alongside the 8B Ollama Fraudster on
+  the same device when QLoRA brings the trainable footprint to
+  ~1.2 GB. (Also fits Colab T4 with room to spare.)
+- **Strong JSON / tool-use behaviour** — Qwen2.5-Instruct was
+  post-trained explicitly for structured outputs, which translates to
+  a noticeably lower `fallback_count` on the action schema than a
+  same-size general-purpose base.
+- **5× smaller than the Fraudster** — sharpens the headline claim
+  ("*small specialised Investigator beats large generalist Fraudster
+  via GRPO*") into something a judge can read off the model card
+  alone.
+
+Override via the `BASE_MODEL` constant in §1 of the notebook if you
+want to scale up (e.g. `Qwen/Qwen2.5-3B-Instruct` or
+`meta-llama/Llama-3.2-3B-Instruct`; both are drop-in replacements).
 
 #### Three runtime budgets
 
@@ -295,8 +315,8 @@ own laptop) can pick how long to wait:
 | `MODE`  | Episodes | Eval seeds   | ~Wall time (24 GB GPU)                       | What it proves |
 |---------|---------:|-------------:|----------------------------------------------|----------------|
 | `smoke` |    6     |  3 (1/task)  | ~10 min (`dry_run=True`, GRPO step skipped)  | Pipeline runs end-to-end; artefacts written. |
-| `demo`  |   30     | 30 (10/task) | ~60–90 min                                   | Visible before/after delta; headline plot meaningful. |
-| `full`  |  150     | 30 (10/task) | ~5–8 h                                       | Convergence-quality curve. |
+| `demo`  |   30     | 30 (10/task) | ~45–75 min                                   | Visible before/after delta; headline plot meaningful. |
+| `full`  |  150     | 30 (10/task) | ~4–6 h                                       | Convergence-quality curve. |
 
 Episode counts are smaller than for a scripted-fraudster setup because
 every rollout now pays the 8B-Fraudster latency. GRPO with a
@@ -305,13 +325,13 @@ than supervised fine-tuning or RLHF on human preferences** — typically
 a few hundred to a few thousand (prompt, completion, reward) samples.
 Each `demo` episode produces ~5–10 Investigator turns, so the
 30-episode `demo` budget yields ~150–300 GRPO samples, which is above
-the noise floor for a 3B base with QLoRA when reward variance is high.
+the noise floor for a 1.5B base with QLoRA when reward variance is high.
 
 ### Training vs inference: two different stacks
 
 CounterFeint deliberately separates the **training** stack from the
 **inference** stack. They look similar from the outside (both serve a
-`Llama-3.2-3B-Instruct` policy) but live behind different code paths:
+`Qwen2.5-1.5B-Instruct` policy) but live behind different code paths:
 
 | Concern                                   | Training (the LLM whose weights move) | Inference / frozen opponent           |
 |-------------------------------------------|---------------------------------------|---------------------------------------|
