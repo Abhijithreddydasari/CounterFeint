@@ -42,7 +42,6 @@ packages = [
     "counterfeint.graders",
     "counterfeint.scripted",
     "counterfeint.agents",
-    "counterfeint.training",
 ]
 
 [tool.setuptools.package-dir]
@@ -52,7 +51,6 @@ packages = [
 "counterfeint.graders" = "graders"
 "counterfeint.scripted" = "scripted"
 "counterfeint.agents" = "agents"
-"counterfeint.training" = "training"
 
 [tool.setuptools.package-data]
 "counterfeint.data" = ["real_world_test_set.json"]

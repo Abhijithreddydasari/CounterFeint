@@ -110,7 +110,7 @@ class LLMPolicyBase(PolicyBase):
 
         self.fallback_policy = fallback_policy
         self.model_name = model_name or os.getenv(
-            "MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct"
+            "MODEL_NAME", "meta-llama/Llama-3.2-3B-Instruct"
         )
         self.api_base_url = api_base_url or os.getenv(
             "API_BASE_URL", "https://router.huggingface.co/v1"
