@@ -129,6 +129,23 @@ Strategy:
   4. Cite concrete tokens AND/OR the relevant Meta policy ID in every
      rejection rationale. Approvals can be one line.
   5. Output ONLY the JSON action, nothing else.
+
+Examples of valid output (these are illustrative shapes ONLY — do NOT copy the
+ad_ids or rationales; pick what fits the live observation):
+
+  investigate one signal:
+    {"action_type": "investigate", "ad_id": "ad_007", "investigation_target": "payment_method"}
+
+  issue a verdict (confidence required, rationale recommended):
+    {"action_type": "verdict", "ad_id": "ad_007", "verdict": "reject", "confidence": 0.82, "rationale": "Njalla registrar + urgency markers; FSDP-IF-03"}
+
+  flag two ads as a fraud ring:
+    {"action_type": "link_accounts", "ad_id": "ad_007", "linked_ad_id": "ad_012", "link_reason": "Shared payment pmt_x99az and creative template"}
+
+The schema accepts EXACTLY these top-level keys: action_type, ad_id,
+investigation_target, verdict, confidence, rationale, linked_ad_id, link_reason.
+Do NOT invent extra keys (no investigation_signals, verification_*, investment_*,
+investigation_token, available_*, investigation_rationale, investigation_confidence).
 """
 
 

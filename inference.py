@@ -65,7 +65,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.2-3B-Instruct")
+MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-1.5B-Instruct")
 HF_TOKEN = os.getenv("HF_TOKEN")
 ENV_URL = os.getenv("COUNTERFEINT_ENV_URL", "http://localhost:8000")
 MODE = os.getenv("COUNTERFEINT_MODE", "three-agent").strip().lower()
@@ -676,12 +676,29 @@ async def arun_three_agent_episode(
                     elog.role_turn(step_idx, role, action_str, reward_val, new_phase)
 
             if done_val or new_phase == "done":
-                final_state = await match.fraudster.state()
+                try:
+                    final_state = await match.fraudster.state()
+                except Exception as exc:
+                    logger.warning(
+                        "Could not fetch final state via fraudster WS (%s); "
+                        "using last step payload as fallback.",
+                        exc,
+                    )
+                    final_state = dict(state_payload)
+                    final_state["phase"] = new_phase
                 end_reason = final_state.get("end_reason")
                 break
 
         if not final_state:
-            final_state = await match.fraudster.state()
+            try:
+                final_state = await match.fraudster.state()
+            except Exception as exc:
+                logger.warning(
+                    "Episode ended without a final state and fraudster WS "
+                    "is unreachable (%s); using last step payload.",
+                    exc,
+                )
+                final_state = dict(state_payload) if state_payload else {}
             end_reason = final_state.get("end_reason")
 
     grader_score = final_state.get("grader_score") or 0.0
