@@ -313,24 +313,42 @@ rate is treated as inconclusive.
 
 ### Evaluated against Meta-CIB-modeled ads
 
-Beyond the procedurally generated tasks, an optional **realism sweep**
-routes the same eval lane through a small held-out dataset
-(`counterfeint/data/real_world_test_set.json`) of synthetic ads
-authored to match the patterns described in Meta's published
-quarterly **Adversarial Threat Reports** — e.g. the Ghana DigitSol
-clique, the Benin Digited chain, and the China–Russia hub-spoke
-operations now wired into our network generator
-([`counterfeint/data/network_generator.py`](data/network_generator.py)).
+Beyond the procedurally generated tasks, every `run_before_after()`
+output also embeds a summary of a small held-out dataset
+([`counterfeint/data/real_world_test_set.json`](data/real_world_test_set.json))
+of **15 synthetic ads** authored to match the patterns described in
+Meta's published quarterly **Adversarial Threat Reports** — covering
+the Ghana DigitSol clique, the Benin Digited chain, and the
+China-Russia hub-spoke operations now wired into our network
+generator ([`counterfeint/data/network_generator.py`](data/network_generator.py)).
+
+| Case study source                       | # ads | Quarter |
+| --------------------------------------- | ----: | :------ |
+| Ghana DigitSol-style                    |     5 | Q3 2020 |
+| Benin Digited-style                     |     5 | Q1 2021 |
+| China-Russia-style hub                  |     3 | Q3 2022 |
+| Distractor (not part of any CIB ring)   |     2 | n/a     |
+
 Every ad in the holdout JSON carries:
 
 * `case_study_source`     — the Meta CIB report it descends from
 * `provenance_quarter`    — the report quarter (e.g. "Q3 2020")
 * `ring_membership`       — the synthetic ring it belongs to
+* `shared_signals`        — payment / registrar / creative fingerprints
+  shared across the ring (the ground truth the Investigator should
+  surface)
 
-These ads never appear in training and are loaded via the
-eval-only `counterfeint/data/real_world_loader.py` helper, so the
-"trained on Meta CIB-modeled cases" claim is grounded and
-reproducible.
+The dataset is loaded only via
+[`counterfeint/data/real_world_loader.py`](data/real_world_loader.py),
+which gates every read on an explicit `confirm_eval_only=True`
+argument. Training rollouts never call the loader, so this set
+**cannot leak into training by accident** — the
+`load_real_world_holdout()` API itself enforces the holdout boundary.
+
+The 2 distractor *legit* ads (Brooklyn coffee roastery,
+Calm app trial) are intentionally included so the realism sweep
+also measures the trained Investigator's **false-positive rate** on
+benign-looking content, not just its hit rate on fraud.
 
 ## Project Structure
 
@@ -361,7 +379,9 @@ counterfeint/
 |   +-- fraud_patterns.py    # Fraud + legit ad templates (easy/medium/hard)
 |   +-- landing_pages.py     # Simulated landing page investigation data
 |   +-- network_generator.py # Named CIB ring topologies (Ghana / Benin / China-Russia)
-|   +-- meta_policy_taxonomy.py  # Meta policy citation metadata layer
+|   +-- meta_policy_taxonomy.py # Meta policy citation IDs / sections / URLs
+|   +-- real_world_test_set.json # 15-ad CIB-modeled holdout (Ghana / Benin / China-Russia)
+|   +-- real_world_loader.py  # Eval-only loader (confirm_eval_only=True gate)
 |   +-- audit_heuristics.py  # Regex helpers (incl. Meta citation IDs)
 +-- graders/
 |   +-- base_grader.py       # Shared normalization and reward logic

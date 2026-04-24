@@ -22,6 +22,7 @@ from counterfeint.eval_suite import (
     _write_eval_json,
     _write_eval_plot,
     _write_eval_summary_md,
+    summarize_real_world_holdout,
 )
 
 
@@ -237,3 +238,24 @@ class TestArtefactWriters:
 
         # Either the PNG was written (matplotlib installed) or the .txt stub was.
         assert out.exists() or out.with_suffix(".txt").exists()
+
+    def test_write_eval_json_includes_holdout_summary(self, tmp_path: Path) -> None:
+        before_eps, after_eps, _, _ = self._make_before_after(tmp_path)
+        out = tmp_path / "eval_results.json"
+        holdout = {"n_ads_total": 15, "n_case_studies": 4}
+        _write_eval_json(
+            before_eps, after_eps, "before", "after", out, holdout_summary=holdout
+        )
+        loaded = json.loads(out.read_text(encoding="utf-8"))
+        assert loaded["real_world_holdout"] == holdout
+
+
+class TestRealWorldHoldoutSummary:
+    def test_summary_reports_15_ads(self) -> None:
+        s = summarize_real_world_holdout()
+        assert s["n_ads_total"] == 15
+        assert s["n_case_studies"] >= 3
+        assert "Ghana DigitSol-style" in s["case_studies"]
+        assert "Benin Digited-style" in s["case_studies"]
+        assert "China-Russia-style hub" in s["case_studies"]
+        assert sum(s["ads_per_case_study"].values()) == s["n_ads_total"]

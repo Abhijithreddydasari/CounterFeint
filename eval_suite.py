@@ -57,10 +57,22 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 try:
+    from .data.real_world_loader import (
+        HoldoutAd,
+        count_by_ring,
+        list_case_studies,
+        load_real_world_holdout,
+    )
     from .inference import ENV_URL, run_three_agent_episode
     from .scripted import HeuristicAuditor, ReactiveFraudster, ScriptedInvestigator
 except ImportError:  # pragma: no cover - script execution fallback
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from counterfeint.data.real_world_loader import (  # type: ignore[no-redef]
+        HoldoutAd,
+        count_by_ring,
+        list_case_studies,
+        load_real_world_holdout,
+    )
     from counterfeint.inference import ENV_URL, run_three_agent_episode  # type: ignore[no-redef]
     from counterfeint.scripted import (  # type: ignore[no-redef]
         HeuristicAuditor,
@@ -339,12 +351,33 @@ def run_eval(
 # ---------------------------------------------------------------------------
 
 
+def summarize_real_world_holdout() -> Dict[str, Any]:
+    """Summary of the Meta-CIB-modeled holdout dataset (no opt-in needed).
+
+    Pulls counts via :func:`counterfeint.data.real_world_loader.count_by_ring`
+    so we can render "evaluated against N synthetic ads grounded in M
+    Meta CIB case studies" without ever loading the ad text itself.
+    Suitable for embedding in :func:`run_before_after` outputs and the
+    README "Evaluated against Meta-CIB-modeled ads" subsection.
+    """
+    counts = count_by_ring()
+    case_studies = list_case_studies()
+    return {
+        "n_ads_total": sum(counts.values()),
+        "n_case_studies": len(case_studies),
+        "case_studies": case_studies,
+        "ads_per_case_study": counts,
+    }
+
+
 def _write_eval_json(
     before: Dict[str, List[EpisodeMetrics]],
     after: Dict[str, List[EpisodeMetrics]],
     before_tag: str,
     after_tag: str,
     path: Path,
+    *,
+    holdout_summary: Optional[Dict[str, Any]] = None,
 ) -> None:
     payload = {
         "schema": "counterfeint.eval_suite.v1",
@@ -359,6 +392,8 @@ def _write_eval_json(
             for task_id, metrics in after.items()
         },
     }
+    if holdout_summary is not None:
+        payload["real_world_holdout"] = holdout_summary
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
@@ -527,6 +562,7 @@ def run_before_after(
     out_dir: Path,
     seeds: Optional[Dict[str, List[int]]] = None,
     env_base_url: str = ENV_URL,
+    include_real_world_summary: bool = True,
 ) -> Dict[str, Any]:
     """Run the full before/after comparison and write all three artefacts.
 
@@ -570,11 +606,25 @@ def run_before_after(
         for task_id, eps in after.items()
     }
 
+    holdout_summary: Optional[Dict[str, Any]] = None
+    if include_real_world_summary:
+        try:
+            holdout_summary = summarize_real_world_holdout()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not summarise holdout dataset: %s", exc)
+
     json_path = out_dir / "eval_results.json"
     md_path = out_dir / "eval_summary.md"
     png_path = out_dir / "eval_plot.png"
 
-    _write_eval_json(before, after, before_tag, after_tag, json_path)
+    _write_eval_json(
+        before,
+        after,
+        before_tag,
+        after_tag,
+        json_path,
+        holdout_summary=holdout_summary,
+    )
     _write_eval_summary_md(before_agg, after_agg, before_tag, after_tag, md_path)
     _write_eval_plot(before_agg, after_agg, before_tag, after_tag, png_path)
 
@@ -583,6 +633,7 @@ def run_before_after(
     return {
         "before": {t: m.to_dict() for t, m in before_agg.items()},
         "after": {t: m.to_dict() for t, m in after_agg.items()},
+        "real_world_holdout": holdout_summary,
         "out_dir": str(out_dir),
     }
 

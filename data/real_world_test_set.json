@@ -1,0 +1,349 @@
+{
+  "$schema": "counterfeint.real_world_test_set.v1",
+  "_about": [
+    "Hand-curated holdout set of 15 synthetic ads grounded in publicly",
+    "documented Meta CIB (Coordinated Inauthentic Behaviour) takedowns.",
+    "Each entry is INSPIRED BY the patterns described in Meta's quarterly",
+    "Adversarial Threat Reports — copy/landing/targeting strings are",
+    "synthesised, not scraped, so this file ships under the same BSD",
+    "licence as the rest of the repo.",
+    "",
+    "Used by counterfeint.data.real_world_loader and ONLY by the eval lane.",
+    "These ads MUST NEVER appear in training rollouts (see eval_suite.py).",
+    "",
+    "Each ad maps to one of the three RING_CASE_STUDIES already used by",
+    "counterfeint.data.network_generator so the eval lane exercises the",
+    "same topologies as the procedural generator."
+  ],
+  "ads": [
+    {
+      "ad_id": "rw_ghana_01",
+      "ad_copy": "BREAKING: Local mom from your area earns $7,500/week with this simple Bitcoin trick celebs don't want you to know. Limited spots, claim yours today!",
+      "category": "fake_crypto",
+      "targeting_summary": "Adults 25-55, low-income postcodes, US+UK+CA, interests: side-hustles, get-rich-quick",
+      "initial_risk_signals": [
+        "high_pressure_urgency",
+        "celebrity_authority_claim",
+        "unrealistic_returns"
+      ],
+      "ground_truth_label": "fraud",
+      "fraud_type": "investment_scam",
+      "severity": 0.85,
+      "difficulty": "medium",
+      "case_study_source": "Ghana DigitSol-style",
+      "provenance_quarter": "Q3 2020",
+      "ring_membership": "rw_ring_ghana",
+      "shared_signals": {
+        "payment_method": "pmt_ring_ghana_01",
+        "creative_template": "tmpl_ghana_btc",
+        "domain_registrar": "Njalla (privacy)"
+      }
+    },
+    {
+      "ad_id": "rw_ghana_02",
+      "ad_copy": "I made $42,000 in 3 weeks using this AI trading bot. No experience needed — just deposit $250 and the bot does the rest.",
+      "category": "fake_crypto",
+      "targeting_summary": "Adults 25-55, low-income postcodes, US+UK+CA, interests: side-hustles, get-rich-quick",
+      "initial_risk_signals": [
+        "unrealistic_returns",
+        "low_minimum_deposit_high_promise",
+        "automated_authority_claim"
+      ],
+      "ground_truth_label": "fraud",
+      "fraud_type": "investment_scam",
+      "severity": 0.85,
+      "difficulty": "medium",
+      "case_study_source": "Ghana DigitSol-style",
+      "provenance_quarter": "Q3 2020",
+      "ring_membership": "rw_ring_ghana",
+      "shared_signals": {
+        "payment_method": "pmt_ring_ghana_01",
+        "creative_template": "tmpl_ghana_btc",
+        "domain_registrar": "Njalla (privacy)"
+      }
+    },
+    {
+      "ad_id": "rw_ghana_03",
+      "ad_copy": "WARNING: Banks are lying to you about your savings. Switch to crypto NOW before the dollar collapses. Free guide — link in bio.",
+      "category": "fake_crypto",
+      "targeting_summary": "Adults 35-65, anti-government/finance distrust interests, US+UK+CA",
+      "initial_risk_signals": [
+        "fear_appeal",
+        "false_authority_claim",
+        "vague_call_to_action"
+      ],
+      "ground_truth_label": "fraud",
+      "fraud_type": "investment_scam",
+      "severity": 0.80,
+      "difficulty": "medium",
+      "case_study_source": "Ghana DigitSol-style",
+      "provenance_quarter": "Q3 2020",
+      "ring_membership": "rw_ring_ghana",
+      "shared_signals": {
+        "payment_method": "pmt_ring_ghana_01",
+        "creative_template": "tmpl_ghana_btc",
+        "domain_registrar": "Njalla (privacy)"
+      }
+    },
+    {
+      "ad_id": "rw_ghana_04",
+      "ad_copy": "Tired of working 9-5? Join 12,000+ everyday people earning passive income from home. Watch the free training today.",
+      "category": "advance_fee",
+      "targeting_summary": "Adults 25-55, low-income postcodes, US+UK+CA, interests: passive-income, work-from-home",
+      "initial_risk_signals": [
+        "social_proof_unverifiable",
+        "vague_offering",
+        "free_then_upsell_pattern"
+      ],
+      "ground_truth_label": "fraud",
+      "fraud_type": "advance_fee_scheme",
+      "severity": 0.70,
+      "difficulty": "hard",
+      "case_study_source": "Ghana DigitSol-style",
+      "provenance_quarter": "Q3 2020",
+      "ring_membership": "rw_ring_ghana",
+      "shared_signals": {
+        "payment_method": "pmt_ring_ghana_01",
+        "creative_template": "tmpl_ghana_btc",
+        "domain_registrar": "Njalla (privacy)"
+      }
+    },
+    {
+      "ad_id": "rw_ghana_05",
+      "ad_copy": "Yoga teacher discovers \"weird\" trick to melt belly fat — doctors hate her! Click to see the 5-second routine.",
+      "category": "miracle_cure",
+      "targeting_summary": "Women 30-65, weight-loss interests, US+UK+CA+AU",
+      "initial_risk_signals": [
+        "unrealistic_health_claim",
+        "doctors_hate_pattern",
+        "click_bait_headline"
+      ],
+      "ground_truth_label": "fraud",
+      "fraud_type": "health_scam",
+      "severity": 0.75,
+      "difficulty": "medium",
+      "case_study_source": "Ghana DigitSol-style",
+      "provenance_quarter": "Q3 2020",
+      "ring_membership": "rw_ring_ghana",
+      "shared_signals": {
+        "payment_method": "pmt_ring_ghana_01",
+        "creative_template": "tmpl_ghana_btc",
+        "domain_registrar": "Njalla (privacy)"
+      }
+    },
+    {
+      "ad_id": "rw_benin_01",
+      "ad_copy": "FREE iPhone 16 Pro Max — only 17 left! Just pay $4.99 shipping. Limited time offer for our followers.",
+      "category": "fake_giveaway",
+      "targeting_summary": "Adults 18-35, mobile-tech interests, US+UK+EU",
+      "initial_risk_signals": [
+        "free_premium_product_low_shipping",
+        "fake_scarcity",
+        "high_pressure_urgency"
+      ],
+      "ground_truth_label": "fraud",
+      "fraud_type": "fake_giveaway",
+      "severity": 0.70,
+      "difficulty": "easy",
+      "case_study_source": "Benin Digited-style",
+      "provenance_quarter": "Q1 2021",
+      "ring_membership": "rw_ring_benin",
+      "shared_signals": {
+        "payment_method": "pmt_ring_benin_02",
+        "creative_template": "tmpl_benin_giveaway",
+        "domain_registrar": "Epik"
+      }
+    },
+    {
+      "ad_id": "rw_benin_02",
+      "ad_copy": "OFFICIAL CONTEST: Win one of 50 PS5 consoles celebrating our anniversary. Comment, share, and submit the form in 24h.",
+      "category": "fake_giveaway",
+      "targeting_summary": "Adults 18-35, gaming interests, US+UK+EU",
+      "initial_risk_signals": [
+        "fake_authority",
+        "fake_scarcity",
+        "external_form_required"
+      ],
+      "ground_truth_label": "fraud",
+      "fraud_type": "fake_giveaway",
+      "severity": 0.65,
+      "difficulty": "medium",
+      "case_study_source": "Benin Digited-style",
+      "provenance_quarter": "Q1 2021",
+      "ring_membership": "rw_ring_benin",
+      "shared_signals": {
+        "payment_method": "pmt_ring_benin_02",
+        "creative_template": "tmpl_benin_giveaway",
+        "domain_registrar": "Epik"
+      }
+    },
+    {
+      "ad_id": "rw_benin_03",
+      "ad_copy": "Authentic Louis Vuitton handbags — 92% off retail because of factory direct shipping. Code SHIP10 takes another 10% off.",
+      "category": "counterfeit_goods",
+      "targeting_summary": "Women 25-50, luxury-fashion interests, US+UK+EU",
+      "initial_risk_signals": [
+        "implausible_discount",
+        "trademark_misuse",
+        "promo_code_urgency"
+      ],
+      "ground_truth_label": "fraud",
+      "fraud_type": "counterfeit_goods",
+      "severity": 0.85,
+      "difficulty": "easy",
+      "case_study_source": "Benin Digited-style",
+      "provenance_quarter": "Q1 2021",
+      "ring_membership": "rw_ring_benin",
+      "shared_signals": {
+        "payment_method": "pmt_ring_benin_02",
+        "creative_template": "tmpl_benin_giveaway",
+        "domain_registrar": "Epik"
+      }
+    },
+    {
+      "ad_id": "rw_benin_04",
+      "ad_copy": "Nike Air Jordans — overstock clearance, $39 a pair. We ship from EU warehouse, 24h dispatch.",
+      "category": "counterfeit_goods",
+      "targeting_summary": "Adults 16-35, sneaker / streetwear interests, US+UK+EU",
+      "initial_risk_signals": [
+        "implausible_discount",
+        "trademark_misuse",
+        "vague_warehouse_claim"
+      ],
+      "ground_truth_label": "fraud",
+      "fraud_type": "counterfeit_goods",
+      "severity": 0.80,
+      "difficulty": "medium",
+      "case_study_source": "Benin Digited-style",
+      "provenance_quarter": "Q1 2021",
+      "ring_membership": "rw_ring_benin",
+      "shared_signals": {
+        "payment_method": "pmt_ring_benin_02",
+        "creative_template": "tmpl_benin_giveaway",
+        "domain_registrar": "Epik"
+      }
+    },
+    {
+      "ad_id": "rw_benin_05",
+      "ad_copy": "Need quick cash? Approved in 5 minutes regardless of credit score — small $79 processing fee unlocks your loan instantly.",
+      "category": "advance_fee",
+      "targeting_summary": "Adults 22-55, payday/short-term-credit interests, US+UK+CA",
+      "initial_risk_signals": [
+        "advance_fee_pattern",
+        "guaranteed_approval_claim",
+        "unregulated_lender_signal"
+      ],
+      "ground_truth_label": "fraud",
+      "fraud_type": "advance_fee_scheme",
+      "severity": 0.85,
+      "difficulty": "medium",
+      "case_study_source": "Benin Digited-style",
+      "provenance_quarter": "Q1 2021",
+      "ring_membership": "rw_ring_benin",
+      "shared_signals": {
+        "payment_method": "pmt_ring_benin_02",
+        "creative_template": "tmpl_benin_giveaway",
+        "domain_registrar": "Epik"
+      }
+    },
+    {
+      "ad_id": "rw_chinarussia_01",
+      "ad_copy": "Elon Musk personally backs this AI investment platform — minimum $250 deposit, 9% daily ROI guaranteed. Watch the interview.",
+      "category": "celebrity_endorsement_fraud",
+      "targeting_summary": "Adults 30-65, finance+tech interests, US+UK+DE+FR",
+      "initial_risk_signals": [
+        "celebrity_endorsement_claim",
+        "unrealistic_returns",
+        "deepfake_video_indicator"
+      ],
+      "ground_truth_label": "fraud",
+      "fraud_type": "celebrity_impersonation",
+      "severity": 0.95,
+      "difficulty": "medium",
+      "case_study_source": "China-Russia-style hub",
+      "provenance_quarter": "Q3 2022",
+      "ring_membership": "rw_ring_china_russia",
+      "shared_signals": {
+        "payment_method": "pmt_ring_cnru_03",
+        "creative_template": "tmpl_cnru_celeb",
+        "domain_registrar": "Tucows (privacy proxy)"
+      }
+    },
+    {
+      "ad_id": "rw_chinarussia_02",
+      "ad_copy": "EXPOSED: Mainstream media is hiding the truth about the war. Click for the real footage your government doesn't want you to see.",
+      "category": "clone_brand",
+      "targeting_summary": "Adults 30-65, news+politics interests, US+UK+DE+FR",
+      "initial_risk_signals": [
+        "fake_news_authority_claim",
+        "polarising_political_content",
+        "external_redirect_pattern"
+      ],
+      "ground_truth_label": "fraud",
+      "fraud_type": "impersonated_news_outlet",
+      "severity": 0.90,
+      "difficulty": "hard",
+      "case_study_source": "China-Russia-style hub",
+      "provenance_quarter": "Q3 2022",
+      "ring_membership": "rw_ring_china_russia",
+      "shared_signals": {
+        "payment_method": "pmt_ring_cnru_03",
+        "creative_template": "tmpl_cnru_celeb",
+        "domain_registrar": "Tucows (privacy proxy)"
+      }
+    },
+    {
+      "ad_id": "rw_chinarussia_03",
+      "ad_copy": "Verified BBC News: leaked emails reveal who really started the conflict. Tap to read the full report.",
+      "category": "clone_brand",
+      "targeting_summary": "Adults 30-65, news+politics interests, US+UK+DE+FR",
+      "initial_risk_signals": [
+        "trademark_news_outlet_misuse",
+        "leaked_documents_claim",
+        "external_redirect_pattern"
+      ],
+      "ground_truth_label": "fraud",
+      "fraud_type": "impersonated_news_outlet",
+      "severity": 0.95,
+      "difficulty": "hard",
+      "case_study_source": "China-Russia-style hub",
+      "provenance_quarter": "Q3 2022",
+      "ring_membership": "rw_ring_china_russia",
+      "shared_signals": {
+        "payment_method": "pmt_ring_cnru_03",
+        "creative_template": "tmpl_cnru_celeb",
+        "domain_registrar": "Tucows (privacy proxy)"
+      }
+    },
+    {
+      "ad_id": "rw_legit_01",
+      "ad_copy": "Independent coffee roastery in Brooklyn — single-origin beans, roasted weekly. Free shipping over $40.",
+      "category": "ecommerce",
+      "targeting_summary": "Adults 25-55, coffee+specialty-food interests, US (NY+NJ+CT)",
+      "initial_risk_signals": [],
+      "ground_truth_label": "legit",
+      "fraud_type": "",
+      "severity": 0.0,
+      "difficulty": "easy",
+      "case_study_source": "Distractor (not part of any CIB ring)",
+      "provenance_quarter": "n/a",
+      "ring_membership": null,
+      "shared_signals": {}
+    },
+    {
+      "ad_id": "rw_legit_02",
+      "ad_copy": "Open the Calm app and start your first 5-minute breathing exercise — free for new users for 7 days.",
+      "category": "saas",
+      "targeting_summary": "Adults 22-50, wellness+mental-health interests, US+UK+CA+AU",
+      "initial_risk_signals": [],
+      "ground_truth_label": "legit",
+      "fraud_type": "",
+      "severity": 0.0,
+      "difficulty": "easy",
+      "case_study_source": "Distractor (not part of any CIB ring)",
+      "provenance_quarter": "n/a",
+      "ring_membership": null,
+      "shared_signals": {}
+    }
+  ]
+}

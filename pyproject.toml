@@ -53,3 +53,6 @@ packages = [
 "counterfeint.scripted" = "scripted"
 "counterfeint.agents" = "agents"
 "counterfeint.training" = "training"
+
+[tool.setuptools.package-data]
+"counterfeint.data" = ["real_world_test_set.json"]
