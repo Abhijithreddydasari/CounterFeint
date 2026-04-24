@@ -65,7 +65,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
+MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3.2-3B-Instruct")
 HF_TOKEN = os.getenv("HF_TOKEN")
 ENV_URL = os.getenv("COUNTERFEINT_ENV_URL", "http://localhost:8000")
 MODE = os.getenv("COUNTERFEINT_MODE", "three-agent").strip().lower()

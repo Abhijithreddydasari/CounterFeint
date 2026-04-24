@@ -1,0 +1,36 @@
+# Training-only dependencies for CounterFeint Investigator GRPO fine-tuning.
+#
+# Kept in a SEPARATE file from requirements-dev.txt so:
+#   * `pip install -e .` (runtime) stays slim — no torch/transformers in
+#     the FraudArena Docker image (~5 GB saved).
+#   * `pip install -r requirements-dev.txt` (CI tests + matplotlib) does
+#     not pull a full GPU stack onto every laptop.
+#   * `pip install -r requirements-train.txt` is the single command you
+#     run on the Colab T4 / A100 node before starting GRPO training.
+#
+# Pinned to versions known-good with TRL's GRPOTrainer at the time of
+# the hackathon. If TRL has shipped a newer release onsite, prefer that
+# and update the version pins here in the same commit.
+
+# Core PyTorch + HuggingFace stack
+torch>=2.3.0
+transformers>=4.46.0
+accelerate>=1.1.0
+datasets>=3.0.0
+
+# PEFT (LoRA / QLoRA adapters) + 4-bit quantisation
+peft>=0.13.0
+bitsandbytes>=0.44.0
+
+# TRL ships GRPOTrainer; >=0.12 is when it stabilised.
+trl>=0.12.0
+
+# safetensors is implicit but pin it to avoid torch-side warnings
+safetensors>=0.4.5
+
+# CLI helpers used by the notebooks
+huggingface_hub>=0.26.0
+
+# Reuse the same eval-time deps so the final cell (`run_before_after`)
+# can render eval_plot.png from the training notebook.
+matplotlib>=3.8.0

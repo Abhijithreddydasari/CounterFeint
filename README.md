@@ -212,7 +212,7 @@ Each task has a dedicated grader that produces a normalized **0.0-1.0 score**. R
 
 ## Baseline Scores
 
-Generated with `seed=42` using `meta-llama/Llama-3.1-8B-Instruct`. Reproducible via `python inference.py`.
+Generated with `seed=42` using `meta-llama/Llama-3.2-3B-Instruct`. Reproducible via `python inference.py`.
 
 | Task | Score | Steps | Verdicts |
 |---|---:|---:|---:|
@@ -245,20 +245,88 @@ validation error) silently fall back to the scripted policy and are
 counted in the `[END] ... fallbacks=fraudster:N,investigator:N`
 STDOUT line.
 
-### Self-play curriculum
+### Self-play curriculum (sequential, two-generation)
 
-During training the Investigator faces a fixed 70/30 split of opponents:
+CounterFeint trains *one agent at a time* against frozen opponents —
+the canonical multi-agent RL paradigm used by AlphaGo, OpenAI Five,
+and AlphaStar. Co-training two LLMs in parallel is non-stationary and
+diverges; sequential self-play is stable.
 
-| Rollout share | Fraudster                                       | Why |
-|--------------:|-------------------------------------------------|-----|
-|         70 % | `ReactiveFraudster` (deterministic, programmatic) | Stable gradient signal; cheap rollouts |
-|         30 % | `LLMFraudster` (frozen Llama-3.1-8B via Ollama)  | Open-ended adversarial pressure |
+**Asymmetric multi-agent setup (shipped).** Train the smaller
+Investigator on `meta-llama/Llama-3.2-3B-Instruct` against the
+**larger frozen** `llama3.1:8b` Fraudster served by Ollama. Every
+rollout uses the LLM Fraudster by default (`LLM_FRAUDSTER_RATIO=1.0`),
+so the training distribution is genuinely adversarial and matches the
+held-out eval distribution — the headline claim is "*the smaller
+model wins via task-specific GRPO against a stronger frozen
+adversary*".
 
-This avoids the "two moving targets" problem (we never co-train two
-LLMs simultaneously) while still giving the trained Investigator
-exposure to genuinely open-vocabulary fraud copy. See
-[`counterfeint/training/rollout_config.py`](training/rollout_config.py)
-for the canonical split spec.
+| Role         | Model                              | Backend            | Trainable? |
+|--------------|------------------------------------|--------------------|------------|
+| Investigator | `meta-llama/Llama-3.2-3B-Instruct` | HuggingFace + QLoRA| **Yes**    |
+| Fraudster    | `llama3.1:8b`                      | Ollama (frozen)    | No         |
+| Auditor      | Heuristic (regex + light scoring)  | In-process Python  | No         |
+
+Single submission notebook (per the hackathon's "*ideally as a Colab
+notebook so judges can re-run it*" guidance): every line of the
+training stack — `HFInvestigator`, the rollout collector, the GRPO
+config, and the TRL `GRPOTrainer` driver — is **inlined into
+[`training/train_investigator.ipynb`](training/train_investigator.ipynb)**.
+Production-time policies (`counterfeint.agents.LLMFraudster`,
+`counterfeint.scripted.*`) and the eval harness (`counterfeint.eval_suite`)
+remain as repo modules because they are also imported by inference /
+serving paths.
+
+Need to fall back to a deterministic Fraudster (e.g. no GPU headroom
+for both 3B-train + 8B-serve)? Set `LLM_FRAUDSTER_RATIO = 0.0` in §1
+of the notebook — every rollout will then use `ReactiveFraudster`
+instead of Ollama.
+
+**Why a 3B base?** Fits on a single Colab T4 (16 GB) with QLoRA, leaves
+headroom for the 8B Ollama Fraudster on the same GPU when QLoRA brings
+the trainable footprint down to ~2 GB. Override via the `BASE_MODEL`
+constant in §1 of the notebook if you want to scale up.
+
+#### Three runtime budgets
+
+The training notebook exposes a single `MODE` knob so judges (or your
+own laptop) can pick how long to wait:
+
+| `MODE`  | Episodes | Eval seeds   | ~Wall time (24 GB GPU)                       | What it proves |
+|---------|---------:|-------------:|----------------------------------------------|----------------|
+| `smoke` |    6     |  3 (1/task)  | ~10 min (`dry_run=True`, GRPO step skipped)  | Pipeline runs end-to-end; artefacts written. |
+| `demo`  |   30     | 30 (10/task) | ~60–90 min                                   | Visible before/after delta; headline plot meaningful. |
+| `full`  |  150     | 30 (10/task) | ~5–8 h                                       | Convergence-quality curve. |
+
+Episode counts are smaller than for a scripted-fraudster setup because
+every rollout now pays the 8B-Fraudster latency. GRPO with a
+verifiable reward function (the existing grader) needs **far less data
+than supervised fine-tuning or RLHF on human preferences** — typically
+a few hundred to a few thousand (prompt, completion, reward) samples.
+Each `demo` episode produces ~5–10 Investigator turns, so the
+30-episode `demo` budget yields ~150–300 GRPO samples, which is above
+the noise floor for a 3B base with QLoRA when reward variance is high.
+
+### Training vs inference: two different stacks
+
+CounterFeint deliberately separates the **training** stack from the
+**inference** stack. They look similar from the outside (both serve a
+`Llama-3.2-3B-Instruct` policy) but live behind different code paths:
+
+| Concern                                   | Training (the LLM whose weights move) | Inference / frozen opponent           |
+|-------------------------------------------|---------------------------------------|---------------------------------------|
+| Backend                                   | HuggingFace `transformers` + `peft` + `trl` | Ollama (OpenAI-compatible HTTP)       |
+| Where it runs                             | GPU process inside the training notebook | Separate background daemon (`ollama serve`) |
+| Code entry point                          | `HFInvestigator` (inlined in §5 of [`train_investigator.ipynb`](training/train_investigator.ipynb)) | `counterfeint.agents.LLMInvestigator` / `LLMFraudster` |
+| 4-bit / LoRA?                             | Yes — QLoRA via `bitsandbytes` + LoRA adapter | No — Ollama serves the GGUF weights as-is |
+| Used during                               | GRPO rollouts in `train_investigator.ipynb` | Held-out eval, baseline runs, frozen LLM Fraudster |
+| Install                                   | `pip install -r requirements-train.txt` | `ollama pull llama3.1:8b` (Fraudster) |
+
+The two stacks deliberately share the **same prompt assembly + JSON
+parsing** (`counterfeint.agents.prompts` + the `_to_messages` /
+`_extract_action` helpers in `LLMPolicyBase`), so the trained adapter
+can be exported to GGUF and dropped behind Ollama with zero behaviour
+drift.
 
 ## Before vs After Training
 
@@ -399,8 +467,8 @@ counterfeint/
 |   +-- static/
 |       +-- investigate_hq.html  # Interactive investigation dashboard
 +-- training/
-|   +-- rollout_config.py    # 70/30 (ReactiveFraudster, LLMFraudster) split spec
-|   +-- train_investigator.ipynb  # Colab scaffold; calls run_before_after at the end
+|   +-- train_investigator.ipynb  # Single-file submission: GRPO trainer with all helpers inlined
+|                                 # (HFInvestigator + rollout collector + GRPO config + driver)
 +-- tests/
     +-- test_data_generation.py  # Determinism, cross-ref, decoy, CIB topology
     +-- test_environment.py      # Step logic, state tracking, anti-exploit
