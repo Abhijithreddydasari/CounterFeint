@@ -171,8 +171,14 @@ class RefereeEnvironment(Environment[Action, Observation, RefereeState]):
     # Default knobs (overridable via reset kwargs).
     DEFAULT_MAX_ROUNDS = 4
     DEFAULT_MAX_PROPOSALS = 5
-    DEFAULT_MAX_FRAUDSTER_ACTIONS_PER_TURN = 3
-    DEFAULT_MAX_INVESTIGATOR_ACTIONS_PER_TURN = 6
+    # Per-turn action caps. Bumped from (3, 6) to (4, 10) so the
+    # Investigator can comfortably investigate 2-3 ads per turn AND issue
+    # verdicts in the same turn without being force-cut to the auditor
+    # mid-thought (the previous (6) cap was triggering the
+    # ``max_rounds`` short-circuit on the final round before the
+    # Investigator could close out pending verdicts).
+    DEFAULT_MAX_FRAUDSTER_ACTIONS_PER_TURN = 4
+    DEFAULT_MAX_INVESTIGATOR_ACTIONS_PER_TURN = 10
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -229,6 +235,13 @@ class RefereeEnvironment(Environment[Action, Observation, RefereeState]):
         # Proposal slot_index -> ad_id map, so the Fraudster can modify its
         # own prior proposals without knowing the Referee's ad_id scheme.
         self._proposal_slot_to_ad_id: Dict[int, str] = {}
+        # Set inside ``_fraudster_propose_ad`` on success, consumed (and
+        # cleared) by ``_serialize_fraudster_action`` so the audit log entry
+        # for a propose_ad always carries the resolved ``ad_id`` and slot
+        # the env actually allocated, not just the LLM's raw payload (which
+        # has no ad_id field for propose_ad).
+        self._last_proposed_ad_id: Optional[str] = None
+        self._last_proposed_slot: Optional[int] = None
 
     # ------------------------------------------------------------------
     # OpenEnv surface (generic)
@@ -401,6 +414,8 @@ class RefereeEnvironment(Environment[Action, Observation, RefereeState]):
         self._per_ad_plausibility = {}
         self._audit_ground_truth = {}
         self._proposal_slot_to_ad_id = {}
+        self._last_proposed_ad_id = None
+        self._last_proposed_slot = None
         self._last_feedback = {
             "fraudster": (
                 f"Match started. Round 1 of {self._max_rounds}. "
@@ -507,6 +522,15 @@ class RefereeEnvironment(Environment[Action, Observation, RefereeState]):
         slot_index = self._proposals_used
         self._proposal_slot_to_ad_id[slot_index] = ad.ad_id
         self._proposals_used += 1
+        # Stash so ``_serialize_fraudster_action`` can attach the resolved
+        # ``ad_id`` + ``slot_index`` to this propose_ad's audit log entry
+        # (the FraudsterAction itself doesn't carry these — they're env-
+        # allocated). Without this the auditor sees ``ad_id=None`` for
+        # every propose_ad, which then poisons downstream Track B checks
+        # (e.g. ``intrinsic_consistency_check`` cannot key flags onto an
+        # ad and ``cross_ad_consistency_audit`` cannot dedupe by ad_id).
+        self._last_proposed_ad_id = ad.ad_id
+        self._last_proposed_slot = slot_index
         self._investigator.notify_queue_grew(ad.ad_id)
 
         feedback = (
@@ -613,6 +637,14 @@ class RefereeEnvironment(Environment[Action, Observation, RefereeState]):
             else:
                 self._round_number += 1
                 self._transition(to="fraudster_turn", note="investigator action cap")
+                # One-line warning when the next investigator turn will be
+                # the LAST one — gives a slow-to-verdict policy a clear
+                # signal that pending ads will get auto-approved otherwise.
+                if self._round_number == self._max_rounds:
+                    self._last_feedback["investigator"] = (
+                        "Final round next: pending ads not given an explicit "
+                        "verdict will auto-approve at audit time."
+                    )
 
         obs.done = self._phase == "done"
         return obs
@@ -871,6 +903,7 @@ class RefereeEnvironment(Environment[Action, Observation, RefereeState]):
             reward=reward,
             feedback=self._last_feedback["fraudster"],
             phase=phase,
+            task_id=getattr(self._episode.task_config, "task_id", ""),
             round_number=self._round_number,
             rounds_remaining=rounds_remaining,
             proposals_used=self._proposals_used,
@@ -1058,7 +1091,7 @@ class RefereeEnvironment(Environment[Action, Observation, RefereeState]):
     def _serialize_fraudster_action(
         self, action: FraudsterAction, reward: float
     ) -> Dict[str, Any]:
-        return {
+        payload: Dict[str, Any] = {
             "ts": time.time(),
             "phase": self._phase,
             "round_number": self._round_number,
@@ -1072,7 +1105,56 @@ class RefereeEnvironment(Environment[Action, Observation, RefereeState]):
             "new_landing_page_blurb": action.new_landing_page_blurb,
             "rationale": action.rationale,
             "reward": reward,
+            "ad_id": None,
         }
+
+        # Enrich queue actions with the env-resolved ad context so the
+        # auditor + downstream graders can key flags onto a real ad_id and
+        # see the AD'S CURRENT STATE (not just the LLM's payload, which
+        # for ``modify_pending_ad`` only carries the *delta* fields).
+        if action.action_type == "propose_ad" and self._last_proposed_ad_id is not None:
+            payload["ad_id"] = self._last_proposed_ad_id
+            payload["slot_index"] = self._last_proposed_slot
+            self._last_proposed_ad_id = None
+            self._last_proposed_slot = None
+        elif (
+            action.action_type == "modify_pending_ad"
+            and action.slot_index is not None
+            and action.slot_index in self._proposal_slot_to_ad_id
+        ):
+            ad_id = self._proposal_slot_to_ad_id[action.slot_index]
+            payload["ad_id"] = ad_id
+            ad = self._find_episode_ad(ad_id)
+            if ad is not None:
+                # Always inject the ad's CURRENT state — the modify only
+                # carries deltas, and post-modify the ad's authoritative
+                # ``ad_copy`` / ``targeting_summary`` live on the
+                # ``Ad`` object the env mutated in
+                # ``_fraudster_modify_pending_ad``.
+                payload.setdefault("category", ad.category)
+                if not payload.get("ad_copy"):
+                    payload["ad_copy"] = action.new_ad_copy or ad.ad_copy
+                if not payload.get("targeting_summary"):
+                    payload["targeting_summary"] = ad.targeting_summary
+                if (
+                    not payload.get("landing_page_blurb")
+                    and self._episode is not None
+                ):
+                    lp = self._episode.landing_pages.get(ad_id)
+                    if lp is not None:
+                        payload["landing_page_blurb"] = (
+                            action.new_landing_page_blurb
+                            or lp.content_summary
+                        )
+        return payload
+
+    def _find_episode_ad(self, ad_id: str) -> Optional[Ad]:
+        if self._episode is None:
+            return None
+        for ad in self._episode.ads:
+            if ad.ad_id == ad_id:
+                return ad
+        return None
 
     def _serialize_investigator_action(
         self, action: AdReviewAction, obs: AdReviewObservation

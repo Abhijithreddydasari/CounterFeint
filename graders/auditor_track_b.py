@@ -43,7 +43,16 @@ from ..models import AuditFlag
 NON_ASCII_MAX_RATIO = 0.2
 REPEATED_NGRAM_MAX = 4  # > this many repeats of any 5-gram → suspicious
 MIN_AD_COPY_CHARS = 20
-MIN_WORDLIKE_RATIO = 0.5
+# Real English ad copy clears 0.95+ on the per-word wordlike test;
+# uniform-random ASCII text caps out around 0.72 because P(>=1 vowel
+# in a 6-letter random word) is ~0.71.  A 0.75 floor cleanly separates
+# the two regimes without flagging short legitimate copy (length<=2
+# words always pass via ``_looks_wordlike``).
+MIN_WORDLIKE_RATIO = 0.75
+# English ad copy averages ~38% vowels; pure-random ASCII has ~19%
+# (5/26). A 28% floor cleanly separates plausible copy from random
+# byte streams without flagging short words like "ATM" or "PR".
+MIN_VOWEL_DENSITY = 0.28
 PATTERN_NOVELTY_MIN_QUEUE = 2
 PATTERN_NOVELTY_JACCARD_FLAG = 0.7
 PATTERN_NOVELTY_EDITDIST_FLAG = 0.2  # normalized edit distance below this → clones
@@ -84,17 +93,29 @@ def intrinsic_consistency_check(
     category = str(proposal.get("category") or "").lower()
     targeting = _get_text(proposal, "targeting_summary")
     ad_copy = _get_text(proposal, "ad_copy", "new_ad_copy")
+    action_type = proposal.get("action_type")
 
     if not category:
-        return 0.5, [
-            AuditFlag(
-                track="B",
-                target_ad_id=ad_id,
-                flag_type="parameter_mismatch",
-                severity=0.5,
-                note="Ad has no declared category; cannot assess intrinsic consistency.",
-            )
-        ]
+        # Defensive: a missing ``category`` is only a real Track B
+        # violation when the Fraudster *explicitly* tried to introduce a
+        # new ad surface (``propose_ad``). For any other action type
+        # (``modify_pending_ad`` carries only delta fields by design,
+        # ``end_turn`` / ``commit_final`` are control-flow, and pre-
+        # action-type-tagged dicts may simply be partial) we return a
+        # NEUTRAL score with no flag — flagging here was the dominant
+        # source of spurious "Ad has no declared category" entries on
+        # the audit log because every modify_pending_ad would fire one.
+        if action_type == "propose_ad":
+            return 0.5, [
+                AuditFlag(
+                    track="B",
+                    target_ad_id=ad_id,
+                    flag_type="parameter_mismatch",
+                    severity=0.5,
+                    note="Ad has no declared category; cannot assess intrinsic consistency.",
+                )
+            ]
+        return 0.7, []
 
     flags: List[AuditFlag] = []
     score = 1.0
@@ -285,6 +306,38 @@ def real_world_existence_check(
             )
         )
         score -= 0.3
+
+    # Vowel-density floor over the alphabetic characters: real English
+    # ad copy lands around 38% vowels; uniform-random byte streams from
+    # ``string.ascii_lowercase`` land around 19%. A 28% cutoff gives us
+    # a clean separator that is independent of word-segmentation (so it
+    # also catches one-giant-token gibberish that the per-word
+    # ``_looks_wordlike`` check would otherwise pass on by chance).
+    #
+    # When this fires we collapse the dimension hard (score := 0): a
+    # piece of copy whose letter distribution looks nothing like English
+    # is not partially-real; it is just random bytes wearing a category
+    # label, and treating it as 50%-real lets too much survival credit
+    # leak through the multi-dimension weighted-mean.
+    alpha_chars = [c.lower() for c in combined if c.isalpha()]
+    if len(alpha_chars) >= 20:
+        vowel_density = sum(1 for c in alpha_chars if c in _VOWELS) / len(alpha_chars)
+        if vowel_density < MIN_VOWEL_DENSITY:
+            severity = min(1.0, 0.7 + (MIN_VOWEL_DENSITY - vowel_density) * 2.0)
+            flags.append(
+                AuditFlag(
+                    track="B",
+                    target_ad_id=ad_id,
+                    flag_type="gibberish",
+                    severity=severity,
+                    note=(
+                        f"Vowel density {vowel_density:.2f} below "
+                        f"{MIN_VOWEL_DENSITY:.2f}; copy reads as random bytes."
+                    ),
+                )
+            )
+            score = 0.0
+            return score, flags
 
     words = [w for w in re.findall(r"[A-Za-z]+", combined) if len(w) > 1]
     if words:
@@ -579,6 +632,7 @@ def _normalized_edit_distance(a: str, b: str) -> float:
 
 __all__ = [
     "MIN_AD_COPY_CHARS",
+    "MIN_VOWEL_DENSITY",
     "MIN_WORDLIKE_RATIO",
     "NON_ASCII_MAX_RATIO",
     "PATTERN_NOVELTY_EDITDIST_FLAG",

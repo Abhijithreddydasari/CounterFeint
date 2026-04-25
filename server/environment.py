@@ -80,6 +80,10 @@ class InvestigatorEnvironment(
         self._verdicts: Dict[str, Dict[str, Any]] = {}
         self._links: List[Dict[str, Any]] = []
         self._investigations: Dict[str, List[str]] = {}
+        # Total `investigate` attempts per ad — INCLUDING ones that the
+        # env rejects (duplicate target, hit cap, etc.).
+
+        self._investigation_attempts: Dict[str, int] = {}
         self._cumulative_reward: float = 0.0
         self._done = False
         self._last_feedback = ""
@@ -131,6 +135,7 @@ class InvestigatorEnvironment(
         self._verdicts = {}
         self._links = []
         self._investigations = {}
+        self._investigation_attempts = {}
         self._cumulative_reward = 0.0
         self._done = False
         self._last_feedback = "Episode started. Review the ad queue and begin your investigation."
@@ -198,7 +203,40 @@ class InvestigatorEnvironment(
     # Action handlers
     # ------------------------------------------------------------------
 
+    # Hard cap on TOTAL investigate attempts per ad — including the ones
+    # the env rejects (duplicate target, ad already verdicted, etc.).
+    
+    _MAX_INVESTIGATION_ATTEMPTS_PER_AD = 5
+    _MAX_INVESTIGATIONS_PER_AD = 3
+
+    def _rotate_focus_off(self, current_ad_id: str) -> Optional[str]:
+        """Move focus to the next pending ad that is NOT ``current_ad_id``.
+
+        Returns the new focus ad_id, or ``None`` if there is no other
+        pending ad. Used by ``_handle_investigate`` when the model is
+        stuck looping on a single ad — rotating focus changes the
+        ``Ad in Focus`` block in the next observation and breaks the
+        prompt-anchoring effect that's keeping the 1.5B Investigator
+        glued to one ad.
+        """
+        if self._episode is None:
+            return None
+        pending_others = [
+            a.ad_id for a in self._episode.ads
+            if a.ad_id not in self._verdicts and a.ad_id != current_ad_id
+        ]
+        if pending_others:
+            self._focused_ad_id = pending_others[0]
+            return pending_others[0]
+        return None
+
     def _handle_investigate(self, action: AdReviewAction) -> float:
+        ad_id = action.ad_id
+        # Count EVERY attempt, including the ones we're about to reject —
+        # this is the primary loop-breaking signal.
+        attempts = self._investigation_attempts.get(ad_id, 0) + 1
+        self._investigation_attempts[ad_id] = attempts
+
         if self._state.remaining_budget <= 0:
             self._last_feedback = "No budget remaining. You must render verdicts on remaining ads or end the episode."
             return -0.02
@@ -207,24 +245,86 @@ class InvestigatorEnvironment(
             self._last_feedback = "investigation_target is required for action_type='investigate'."
             return -0.05
 
-        ad_id = action.ad_id
-        target = action.investigation_target
-
-        prev = self._investigations.setdefault(ad_id, [])
-        if target in prev:
+        if ad_id in self._verdicts:
+            new_focus = self._rotate_focus_off(ad_id)
             self._last_feedback = (
-                f"You already investigated '{target}' for {ad_id}. "
-                "Choose a different investigation target or render a verdict."
+                f"You already rendered a verdict on {ad_id}. "
+                + (
+                    f"Focus moved to {new_focus} — investigate or verdict that ad next."
+                    if new_focus else
+                    "All other ads are also verdicted; emit verdict actions for any remaining pending ads."
+                )
             )
             return -0.02
 
-        if ad_id in self._verdicts:
-            self._last_feedback = f"You already rendered a verdict on {ad_id}. Choose a different ad."
+        # Hard cap on TOTAL attempts (catches the duplicate-target spam
+        # loop). Fires BEFORE the duplicate-target check so we hit the
+        # cap first when the model is just spamming the same target.
+        if attempts > self._MAX_INVESTIGATION_ATTEMPTS_PER_AD:
+            new_focus = self._rotate_focus_off(ad_id)
+            done_targets = self._investigations.get(ad_id, [])
+            self._last_feedback = (
+                f"REJECTED: {ad_id} has been probed {attempts} times — that's the cap. "
+                f"STOP TRYING TO INVESTIGATE {ad_id}. "
+                f"Issue a verdict on {ad_id} NOW (action_type='verdict', verdict in "
+                "{approve, reject, escalate}). "
+                + (
+                    f"Successful pulls on {ad_id} so far: {', '.join(done_targets) or 'none'}. "
+                    if done_targets else ""
+                )
+                + (
+                    f"Focus moved to {new_focus}; investigate that ad if you'd rather "
+                    "build evidence on a fresh ad first."
+                    if new_focus else
+                    "No other pending ads — verdict the remaining pending ads."
+                )
+            )
+            return -0.10
+
+        prev = self._investigations.setdefault(ad_id, [])
+        target = action.investigation_target
+
+        if target in prev:
+            # Duplicate-target case. Don't spend budget. Surface the
+            # un-pulled targets so the model has a concrete next pick.
+            allowed = {
+                "advertiser_history", "landing_page", "payment_method",
+                "targeting_overlap", "campaign_structure", "policy_classifier",
+            }
+            remaining = sorted(allowed - set(prev))
+            self._last_feedback = (
+                f"You already investigated '{target}' for {ad_id} "
+                f"(attempt {attempts}/{self._MAX_INVESTIGATION_ATTEMPTS_PER_AD}). "
+                f"Either issue a verdict on {ad_id} now, OR pick a fresh target from "
+                f"[{', '.join(remaining) if remaining else '(none left — verdict it)'}], "
+                "OR investigate a different ad_id from the pending queue."
+            )
             return -0.02
+
+        # Sub-cap on successful pulls (tighter than the attempt cap).
+        # Forces verdict after 3 successful investigations.
+        if len(prev) >= self._MAX_INVESTIGATIONS_PER_AD:
+            new_focus = self._rotate_focus_off(ad_id)
+            self._last_feedback = (
+                f"{ad_id} has reached the {self._MAX_INVESTIGATIONS_PER_AD}-investigation cap "
+                f"(already pulled: {', '.join(prev)}). Issue a verdict on {ad_id} now "
+                "(action_type='verdict' with verdict in {approve, reject, escalate})."
+                + (f" Focus moved to {new_focus}." if new_focus else "")
+            )
+            return -0.05
 
         self._state.remaining_budget -= 1
         prev.append(target)
-        self._focused_ad_id = ad_id
+        # Note: focus is updated to the ad we just investigated only when
+        # the Investigator hasn't already accumulated >=2 investigations
+        # on it. Past 2 investigations on the same ad we keep focus on
+        # the EXISTING focused ad (which may be a different one) so the
+        # prompt doesn't re-anchor the model to an ad it should be
+        # rendering a verdict on, NOT investigating further. This nudges
+        # the policy toward "investigate twice → verdict → move on"
+        # instead of looping investigations on a single ad.
+        if len(prev) <= 2 or self._focused_ad_id is None:
+            self._focused_ad_id = ad_id
 
         if self._registry is not None:
             findings = self._registry.lookup(ad_id, target)
@@ -232,11 +332,28 @@ class InvestigatorEnvironment(
             findings = self._episode.investigation_data.get(ad_id, {}).get(
                 target, "No data available for this investigation type."
             )
-        self._last_feedback = (
-            f"Investigation complete: {target} for {ad_id}.\n"
-            f"--- Findings ---\n{findings}"
-        )
-        return -0.02
+        # Escalating per-investigate penalty so a runaway investigate
+        # loop on a single ad gets progressively more expensive — pushes
+        # the policy toward issuing a verdict once it has enough signal,
+        # rather than burning steps re-checking the same ad.
+        n_targets = len(prev)
+        if n_targets <= 2:
+            penalty = -0.02
+        elif n_targets == 3:
+            penalty = -0.05
+        else:
+            penalty = -0.10
+        feedback_lines = [
+            f"Investigation complete: {target} for {ad_id}.",
+            f"--- Findings ---\n{findings}",
+        ]
+        if n_targets >= 2:
+            feedback_lines.append(
+                f"Note: you have now investigated {ad_id} {n_targets}x — "
+                "issue a verdict on it instead of more investigations."
+            )
+        self._last_feedback = "\n".join(feedback_lines)
+        return penalty
 
     def _handle_verdict(self, action: AdReviewAction) -> float:
         ad_id = action.ad_id
@@ -500,6 +617,52 @@ class InvestigatorEnvironment(
         reviewed = [a for a in self._episode.ads if a.ad_id in self._verdicts]
 
         steps_remaining = max(0, config.action_budget - self._state.step_count)
+
+        # Surface the action-budget-vs-pending-ads pressure as a prominent
+        # feedback banner. We use TWO triggers because they catch
+        # different failure modes:
+        #
+        #   * `steps_remaining <= 2 * n_pending` — fires when you have
+        #     less than ~2 actions per pending ad left. Catches the
+        #     "looped on ad_001 for 20 steps and now there isn't time
+        #     to verdict everyone" case the 1.5B Investigator falls into.
+        #     This trigger doesn't depend on investigation budget — even
+        #     with full investigation budget, if step budget is tight,
+        #     verdicts MUST start now.
+        #
+        #   * `remaining_investigation_budget <= n_pending` — original
+        #     trigger. Catches the case where investigation actions
+        #     have actually been spent on real pulls, not on rejected
+        #     duplicates.
+        
+        if not done and pending and feedback_override is None:
+            n_pending = len(pending)
+            budget = self._state.remaining_budget
+            steps_left = steps_remaining
+            steps_pressure = steps_left <= 2 * n_pending
+            budget_pressure = budget <= n_pending
+            if steps_pressure or budget_pressure:
+                # Pick the tighter wording.
+                if steps_pressure:
+                    pressure_line = (
+                        f"BUDGET PRESSURE: only {steps_left} step(s) left in this "
+                        f"episode for {n_pending} pending ad(s). Stop investigating "
+                        f"and START VERDICTING — issue verdict actions "
+                        f"(action_type='verdict', verdict in approve/reject/escalate) "
+                        f"on the pending ads using whatever evidence you have. "
+                        f"Unverdict-ed ads auto-approve at audit and tank the score."
+                    )
+                else:
+                    pressure_line = (
+                        f"BUDGET PRESSURE: only {budget} investigation(s) left for "
+                        f"{n_pending} pending ad(s). Stop investigating and START "
+                        f"VERDICTING — issue verdict actions on the pending ads using "
+                        f"whatever evidence you have (approve, reject, or escalate). "
+                        f"Unverdict-ed ads auto-approve at audit time and tank the score."
+                    )
+                feedback = (
+                    f"{pressure_line}\n\n{feedback}" if feedback else pressure_line
+                )
         queue_summary = (
             f"Task: {config.name} ({config.difficulty})\n"
             f"Total ads: {config.queue_size} | "
@@ -516,7 +679,22 @@ class InvestigatorEnvironment(
             if ad and ad.ad_id not in self._verdicts:
                 signals = ", ".join(ad.initial_risk_signals) if ad.initial_risk_signals else "None"
                 investigated = self._investigations.get(ad.ad_id, [])
-                inv_status = ", ".join(investigated) if investigated else "None yet"
+                attempts = self._investigation_attempts.get(ad.ad_id, 0)
+
+                _all_targets = [
+                    "advertiser_history", "landing_page", "payment_method",
+                    "targeting_overlap", "campaign_structure", "policy_classifier",
+                ]
+                exhausted = [t for t in _all_targets if t in investigated]
+                fresh = [t for t in _all_targets if t not in investigated]
+                exhausted_line = (
+                    f"ALREADY-EXHAUSTED targets for {ad.ad_id} (do NOT repeat): "
+                    f"{', '.join(exhausted) if exhausted else 'none yet'}"
+                )
+                fresh_line = (
+                    f"FRESH targets for {ad.ad_id} (you may pick one of these or verdict): "
+                    f"{', '.join(fresh) if fresh else 'none — verdict this ad now'}"
+                )
 
                 # Contextual metadata visible before investigation
                 profile = self._episode.advertiser_profiles.get(ad.ad_id)
@@ -536,7 +714,19 @@ class InvestigatorEnvironment(
                     f"{policy_entry.section} > {policy_entry.subsection}"
                 )
 
+                # If the model has spammed this ad past N attempts,
+                # surface that loud-and-clear at the top of the focus
+                # block so the next observation pushes harder toward
+                # verdict instead of silently re-anchoring.
+                stuck_banner = ""
+                if attempts >= 3:
+                    stuck_banner = (
+                        f"STUCK ON {ad.ad_id}: you have attempted {attempts} "
+                        f"investigate actions on this ad. ISSUE A VERDICT NOW.\n"
+                    )
+
                 current_ad_info = (
+                    f"{stuck_banner}"
                     f"=== Ad in Focus: {ad.ad_id} ===\n"
                     f"Category: {ad.category}\n"
                     f"{meta_policy_line}\n"
@@ -544,9 +734,8 @@ class InvestigatorEnvironment(
                     f"Targeting: {ad.targeting_summary}\n"
                     f"Initial risk signals: {signals}\n"
                     f"{context_meta}\n"
-                    f"Investigations completed: {inv_status}\n"
-                    f"Available investigation targets: advertiser_history, landing_page, "
-                    f"payment_method, targeting_overlap, campaign_structure, policy_classifier"
+                    f"{exhausted_line}\n"
+                    f"{fresh_line}"
                 )
 
         investigation_findings = ""
@@ -595,6 +784,8 @@ class InvestigatorEnvironment(
         }
 
         evidence_ledger = self._build_evidence_ledger()
+        queue_digest = self._build_queue_digest(pending)
+        decided_ads = self._build_decided_ads()
 
         return AdReviewObservation(
             done=done,
@@ -608,7 +799,53 @@ class InvestigatorEnvironment(
             queue_status=queue_status,
             queue_may_grow=self._queue_may_grow,
             evidence_ledger=evidence_ledger,
+            queue_digest=queue_digest,
+            decided_ads=decided_ads,
         )
+
+    # Curated columns surfaced in the no-investigation queue digest so
+    # the Investigator has SOMETHING to triage on for every pending ad,
+    # not just the focused one. Mix of:
+    #
+    #   * Discriminative (used for link_accounts decisions when shared
+    #     across ads):  payment_type, registrar, domain
+    #   * Decoy / non-discriminative (deliberately included so the
+    #     policy must learn not to weight them):
+    #     category, country, account_age_days
+    #
+    # Total of ~6 columns × 12 ads ≈ 720 chars worst case, well within
+    # prompt budget. payment_id / advertiser_id / targeting_fingerprint
+    # are NOT exposed here — those are the high-signal columns that
+    # MUST require an explicit investigate to avoid trivialising the
+    # task; they remain in the evidence_ledger only.
+    _QUEUE_DIGEST_MAX_ADS = 12
+
+    def _build_queue_digest(
+        self, pending_ads: List[Ad]
+    ) -> List[Dict[str, Any]]:
+        if self._episode is None or not pending_ads:
+            return []
+
+        lp_map = getattr(self._episode, "landing_pages", {}) or {}
+        profiles = getattr(self._episode, "advertiser_profiles", {}) or {}
+
+        rows: List[Dict[str, Any]] = []
+        for ad in pending_ads[: self._QUEUE_DIGEST_MAX_ADS]:
+            row: Dict[str, Any] = {
+                "ad_id": ad.ad_id,
+                "category": ad.category,
+            }
+            profile = profiles.get(ad.ad_id)
+            if profile is not None:
+                row["country"] = profile.country
+                row["account_age_days"] = profile.account_age_days
+                row["payment_type"] = profile.payment_method_type
+            lp = lp_map.get(ad.ad_id)
+            if lp is not None:
+                row["domain"] = getattr(lp, "domain", None)
+                row["registrar"] = getattr(lp, "registrar", None)
+            rows.append({k: v for k, v in row.items() if v is not None})
+        return rows
 
     def _build_evidence_ledger(self) -> Dict[str, Dict[str, Any]]:
         """Assemble a per-ad structured evidence table for the Investigator.
@@ -628,6 +865,44 @@ class InvestigatorEnvironment(
             ad_ids=candidate_ad_ids,
             investigations=self._investigations,
         )
+
+    def _build_decided_ads(self) -> list[Dict[str, Any]]:
+        """Build a per-decided-ad summary with verdict + key signals.
+
+        Each entry carries the verdict, confidence, and a curated mix of
+        discriminative + decoy parameters from the evidence ledger. This
+        gives the Investigator structured memory of past decisions so it
+        can detect cross-ad collisions for link_accounts.
+        """
+        if self._episode is None:
+            return []
+
+        decided_ad_ids = [
+            ad_id for ad_id in self._verdicts
+            if not self._verdicts[ad_id].get("auto_approved")
+        ]
+        if not decided_ad_ids:
+            return []
+
+        ledger = build_evidence_ledger(
+            episode=self._episode,
+            registry=self._registry,
+            ad_ids=decided_ad_ids,
+            investigations=self._investigations,
+        )
+
+        rows: list[Dict[str, Any]] = []
+        for ad_id in decided_ad_ids:
+            v = self._verdicts[ad_id]
+            entry: Dict[str, Any] = {
+                "ad_id": ad_id,
+                "verdict": v.get("verdict", "?"),
+                "confidence": v.get("confidence", 0.5),
+            }
+            signals = ledger.get(ad_id, {})
+            entry.update(signals)
+            rows.append(entry)
+        return rows
 
     # ------------------------------------------------------------------
     # Referee integration hooks

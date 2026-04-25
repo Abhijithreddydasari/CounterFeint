@@ -362,7 +362,7 @@ class TestConstructionInvariants:
             retries=0,
         )
         text = policy._build_user_prompt(_fraudster_obs())
-        assert "proposals_remaining     = 5" in text
+        assert "proposals_left=5" in text
         assert "ecommerce" in text
         assert "fake_giveaway" in text
 

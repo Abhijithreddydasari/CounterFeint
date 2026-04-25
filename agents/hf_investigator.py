@@ -152,7 +152,7 @@ class HFInvestigator(LLMPolicyBase):
 
     # ------------------------------------------------------------------
     # Reused from LLMInvestigator (same observation-to-prompt mapping
-    # the production HTTP path uses, including the new evidence_ledger).
+    # the production HTTP path uses).
     # ------------------------------------------------------------------
     def _build_user_prompt(self, observation: Dict[str, Any]) -> str:
         return LLMInvestigator._build_user_prompt(self, observation)

@@ -321,7 +321,13 @@ class TestTaskConfigCurriculum:
         env = RefereeEnvironment()
         env.reset_match(task_id="task_1", seed=42)
         assert env.state.max_rounds == 4
-        assert env.state.max_proposals == 5
+        # Task 1 was lowered from 5 → 3 max_proposals during T-24h iteration:
+        # the queue was structurally over-saturated (5 base + 5 proposed = 10
+        # ads vs 25 action budget = 2.5 actions/ad), so the Investigator
+        # physically could not verdict everything. Lowering the cap to 3
+        # keeps the queue at most 5+3=8 ads (~3 actions/ad) and gives the
+        # 1.5B baseline a chance at >=3 verdicts before steps run out.
+        assert env.state.max_proposals == 3
         allowed = env.build_fraudster_observation().allowed_categories
         assert "fake_giveaway" in allowed
         assert "miracle_cure" in allowed

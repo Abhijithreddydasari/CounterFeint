@@ -18,13 +18,7 @@ from .prompts import FRAUDSTER_SYSTEM_PROMPT, FRAUDSTER_USER_TEMPLATE
 
 
 def _compact_queue(queue: List[Dict[str, Any]], max_items: int = 8) -> str:
-    """Condense the current_queue field to a single-line preview.
-
-    Items the Fraudster owns (``is_my_proposal == True``) are always
-    listed first so they never get dropped by the truncation cap — the
-    Fraudster's own slate is the part it actually needs to reason about
-    when picking ``modify_pending_ad`` vs ``propose_ad``.
-    """
+    """Condense the current_queue field to a single-line preview."""
     if not queue:
         return "[empty]"
 
@@ -52,7 +46,7 @@ def _compact_prior_verdicts(
     verdicts: List[Dict[str, Any]], max_items: int = 5
 ) -> str:
     if not verdicts:
-        return "[none yet]"
+        return "(none yet)"
     recent = verdicts[-max_items:]
     out: List[str] = []
     for v in recent:
@@ -60,43 +54,21 @@ def _compact_prior_verdicts(
         decision = v.get("verdict", "?")
         conf = v.get("confidence")
         mine = " [mine]" if v.get("was_my_proposal") else ""
-        rationale = (v.get("rationale") or "").strip()
-        if len(rationale) > 80:
-            rationale = rationale[:77] + "..."
         conf_str = f"{conf:.2f}" if isinstance(conf, (int, float)) else "?"
-        out.append(f"{ad_id}={decision}@{conf_str}{mine}: {rationale}")
+        out.append(f"{ad_id}={decision}@{conf_str}{mine}")
     return " | ".join(out)
 
 
-def _compact_inv_targets(
-    targets: Dict[str, List[str]], max_items: int = 6
-) -> str:
-    if not targets:
-        return "[none]"
-    parts = []
-    for ad_id in list(targets.keys())[:max_items]:
-        t_list = targets[ad_id]
-        parts.append(f"{ad_id}:{','.join(t_list)}")
-    trailer = "" if len(targets) <= max_items else f" +{len(targets) - max_items}"
-    return " | ".join(parts) + trailer
-
-
-# Order matches the Investigator's evidence-ledger column order, so the
-# Fraudster can mentally cross-reference its slate against the columns
-# the Investigator reasons over. We do NOT label which columns are the
-# discriminative ones — that's something the Fraudster has to learn
-# from rejection patterns.
+# Columns rendered per proposal. Matches the Investigator's decided-ads
+# column set so both sides reason over the same signal vocabulary.
 _PROPOSAL_SIGNAL_COLUMNS: List[str] = [
     "slot_index",
     "investigator_verdict",
     "category",
     "country",
     "account_age_days",
-    "advertiser_id",
-    "verified_business",
     "domain",
     "registrar",
-    "domain_age_days",
     "payment_id",
     "payment_type",
     "targeting_fingerprint",
@@ -130,6 +102,62 @@ def _render_my_proposal_signals(
     return ("\n".join(lines) + trailer).rstrip()
 
 
+# Per-task-tier guidance appended to the user prompt. Easy tasks get a
+# louder fraud posture (so the Investigator can succeed at all in the
+# pre-training baseline); hard tasks get a stealthier posture (so the
+# trained Investigator's lift is meaningful). We deliberately surface
+# this in the USER prompt instead of mutating ``system_prompt`` so the
+# policy still sees a stable system role across all tasks (the system
+# prompt is the schema contract; per-task hints live in the user
+# message where the rest of the per-turn observation lives).
+_TASK_TIER_HINTS: Dict[str, str] = {
+    "task_1": (
+        "Tier hint (task_1, easy): use blatant fraud cues — obvious "
+        "scam ad copy, unrelated targeting, cheap TLDs. The Investigator "
+        "needs a clean baseline to learn against."
+    ),
+    "task_2": (
+        "Tier hint (task_2, medium): mix one or two subtle ads with the "
+        "obvious ones; vary registrars / payment types across your slate."
+    ),
+    "task_3": (
+        "Tier hint (task_3, hard): aim for stealth. Construct fraud "
+        "rings via shared payment_id / domain / targeting_fingerprint "
+        "across 2-3 of your proposals so the only path to detection is "
+        "cross-ad ring inference, not single-ad surface red flags."
+    ),
+    "task_3_unseen": (
+        "Tier hint (task_3_unseen, hard generalisation): same posture "
+        "as task_3 but you are being evaluated on a held-out seed — do "
+        "NOT collapse to a single template; vary your slate."
+    ),
+}
+
+
+def _task_tier_hint(task_id: str) -> str:
+    return _TASK_TIER_HINTS.get(task_id or "", "")
+
+
+# Field whitelist per action_type. Keys not in the whitelist for the
+# action's type are dropped before Pydantic validation so a small
+# Llama-class model that mixes (e.g. ``slot_index`` on a ``propose_ad``,
+# or ``ad_copy`` on a ``modify_pending_ad``) still produces a valid
+# action instead of falling back. ``rationale`` and ``action_type`` are
+# always allowed.
+_FRAUDSTER_FIELDS_BY_TYPE: Dict[str, set[str]] = {
+    "propose_ad": {
+        "action_type", "ad_copy", "category",
+        "landing_page_blurb", "targeting_summary", "rationale",
+    },
+    "modify_pending_ad": {
+        "action_type", "slot_index",
+        "new_ad_copy", "new_landing_page_blurb", "rationale",
+    },
+    "end_turn": {"action_type", "rationale"},
+    "commit_final": {"action_type", "rationale"},
+}
+
+
 class LLMFraudster(LLMPolicyBase):
     """LLM Fraudster with a :class:`ReactiveFraudster` deterministic fallback."""
 
@@ -152,7 +180,7 @@ class LLMFraudster(LLMPolicyBase):
     def _build_user_prompt(self, observation: Dict[str, Any]) -> str:
         queue = observation.get("current_queue", []) or []
         verdicts = observation.get("prior_verdicts", []) or []
-        inv_targets = observation.get("investigation_targets_used", {}) or {}
+        tier_hint = _task_tier_hint(observation.get("task_id", ""))
 
         return FRAUDSTER_USER_TEMPLATE.format(
             round_number=observation.get("round_number", 0),
@@ -166,12 +194,94 @@ class LLMFraudster(LLMPolicyBase):
             queue_len=len(queue),
             current_queue_preview=_compact_queue(queue),
             prior_verdicts_preview=_compact_prior_verdicts(verdicts),
-            investigation_targets_preview=_compact_inv_targets(inv_targets),
             my_proposal_signals_preview=_render_my_proposal_signals(
                 observation.get("my_proposal_signals") or {}
             ),
+            tier_hint=tier_hint or "(no tier hint for this task)",
             feedback=(observation.get("feedback") or "").strip() or "(none)",
         )
+
+    # ------------------------------------------------------------------
+    # Schema-coercion shim. Llama 3.1 in particular tends to:
+    #   1. emit ``"slot_index": -1`` on ``propose_ad`` (it interprets
+    #      the slot field as "no slot yet"), which violates the
+    #      ``ge=0`` constraint and trips the Pydantic validator → the
+    #      whole step then falls back to the deterministic
+    #      ReactiveFraudster, polluting fallback metrics.
+    #   2. include modify-only fields (``slot_index``, ``new_ad_copy``)
+    #      on a ``propose_ad`` action and vice-versa. These are
+    #      Optional in the schema so they pass validation, but they
+    #      poison the audit log because ``_serialize_fraudster_action``
+    #      copies them through verbatim.
+    #
+    # We normalise both classes of issue here so the fallback only
+    # fires on hard JSON / unknown-action errors.
+    # ------------------------------------------------------------------
+    def _coerce_payload(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        action_type = data.get("action_type")
+        if action_type not in _FRAUDSTER_FIELDS_BY_TYPE:
+            return data
+        allowed = _FRAUDSTER_FIELDS_BY_TYPE[action_type]
+        out: Dict[str, Any] = {k: v for k, v in data.items() if k in allowed}
+
+        # Llama 3.1 frequently emits ``targeting_summary`` (and other
+        # free-text fields) as a structured dict like
+        #   {"age_range": [13, 65], "genders": ["male", "female"], ...}
+        # or a list, rather than the schema-required string. Flatten
+        # these into a deterministic string representation here so we
+        # don't burn through the fallback budget on every other turn.
+        for text_field in (
+            "ad_copy",
+            "landing_page_blurb",
+            "targeting_summary",
+            "new_ad_copy",
+            "new_landing_page_blurb",
+            "new_targeting_summary",
+        ):
+            if text_field in out and not isinstance(out[text_field], str):
+                out[text_field] = _stringify_text_field(out[text_field])
+
+        if action_type == "modify_pending_ad":
+            slot = out.get("slot_index")
+            if isinstance(slot, str):
+                try:
+                    out["slot_index"] = int(slot)
+                except (TypeError, ValueError):
+                    out.pop("slot_index", None)
+            slot = out.get("slot_index")
+            if isinstance(slot, int) and slot < 0:
+                # -1 is meaningless for a modify; surface as missing
+                # so the env returns its "modify_pending_ad requires
+                # slot_index" error rather than silently rewriting
+                # slot 0.
+                out.pop("slot_index", None)
+
+        return out
+
+
+def _stringify_text_field(value: Any) -> str:
+    """Flatten a dict/list LLM emission into a comma-joined string.
+
+    For dict inputs, joins ``key=value`` pairs (sub-lists comma-joined,
+    sub-dicts JSON-encoded as a fallback). For list inputs, joins the
+    items by ``", "``. Anything else is rendered through ``str()``.
+    The result is intended to preserve the LLM's intent as readable
+    text without crashing the schema validator.
+    """
+    if isinstance(value, dict):
+        parts: List[str] = []
+        for k, v in value.items():
+            if isinstance(v, list):
+                rendered = ",".join(str(item) for item in v)
+            elif isinstance(v, dict):
+                rendered = ";".join(f"{ki}={vi}" for ki, vi in v.items())
+            else:
+                rendered = str(v)
+            parts.append(f"{k}={rendered}")
+        return "; ".join(parts)
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value)
+    return str(value)
 
 
 __all__ = ["LLMFraudster"]
