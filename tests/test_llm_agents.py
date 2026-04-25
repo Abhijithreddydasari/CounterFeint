@@ -375,3 +375,134 @@ class TestConstructionInvariants:
         text = policy._build_user_prompt(_investigator_obs())
         assert "Meta policy lens: FSDP-IF-03" in text
         assert "ad_001" in text
+
+
+# ---------------------------------------------------------------------------
+# HFInvestigator (local-transformers backend)
+# ---------------------------------------------------------------------------
+
+
+class _FakeTokenizer:
+    """Minimal HF tokenizer stand-in: chat-template + decode/encode."""
+
+    pad_token = None
+    eos_token = "<eos>"
+    pad_token_id = 0
+    eos_token_id = 0
+
+    def apply_chat_template(self, messages, **_):
+        # We don't care about the actual encoding — the fake model returns
+        # a hard-coded string regardless. Return a tiny tensor so the
+        # ``encoded["input_ids"].shape[-1]`` slice still works.
+        import torch  # local import: tests skip if torch missing
+        return {"input_ids": torch.zeros((1, 4), dtype=torch.long)}
+
+    def decode(self, _ids, skip_special_tokens=True):  # noqa: ARG002
+        # Returns the reply string injected on the fake model.
+        return self._next_reply
+
+    def __init__(self, reply: str = ""):
+        self._next_reply = reply
+
+
+class _FakeHFModel:
+    """Minimal HF model stand-in: device + ``.generate`` only."""
+
+    def __init__(self, reply_ids_len: int = 8):
+        self._reply_ids_len = reply_ids_len
+
+    def parameters(self):
+        # Yield one CPU param so HFInvestigator's ``next(...)`` works
+        # without bringing in torch.cuda.
+        import torch
+        yield torch.zeros(1)
+
+    def generate(self, **kwargs):
+        import torch
+        prompt_len = kwargs["input_ids"].shape[-1]
+        # Append `_reply_ids_len` dummy tokens so the .decode() slice
+        # returns the tokenizer's pre-loaded reply text.
+        return torch.cat(
+            [kwargs["input_ids"],
+             torch.zeros((1, self._reply_ids_len), dtype=torch.long)],
+            dim=1,
+        )
+
+
+class TestHFInvestigator:
+    def test_clean_json_completion_validates_and_records(self) -> None:
+        try:
+            from counterfeint.agents.hf_investigator import HFInvestigator
+        except ImportError:
+            pytest.skip("transformers/torch not installed")
+
+        payload = json.dumps(
+            {
+                "action_type": "investigate",
+                "ad_id": "ad_001",
+                "investigation_target": "payment_method",
+                "rationale": "check payment trail",
+            }
+        )
+        tok = _FakeTokenizer(reply=payload)
+        policy = HFInvestigator(
+            model=_FakeHFModel(),
+            tokenizer=tok,
+            fallback_policy=_SentinelFallback("investigator"),
+        )
+
+        action = policy.act(_investigator_obs())
+
+        assert action.action_type == "investigate"
+        assert action.investigation_target == "payment_method"
+        assert policy.fallback_count == 0
+        assert policy.last_completion == payload
+        assert policy.last_prompt is not None
+        assert "ad_001" in policy.last_prompt
+
+    def test_alias_keys_are_coerced_before_validation(self) -> None:
+        try:
+            from counterfeint.agents.hf_investigator import HFInvestigator
+        except ImportError:
+            pytest.skip("transformers/torch not installed")
+
+        payload = json.dumps(
+            {
+                "action_type": "investigate",
+                "ad_id": "ad_001",
+                "investigation_token": "landing_page",
+                "investigation_rationale": "check copy",
+            }
+        )
+        tok = _FakeTokenizer(reply=payload)
+        policy = HFInvestigator(
+            model=_FakeHFModel(),
+            tokenizer=tok,
+            fallback_policy=_SentinelFallback("investigator"),
+        )
+
+        action = policy.act(_investigator_obs())
+
+        assert action.investigation_target == "landing_page"
+        assert "check copy" in (action.rationale or "")
+        assert policy.fallback_count == 0
+
+    def test_garbage_completion_falls_back_and_records_error(self) -> None:
+        try:
+            from counterfeint.agents.hf_investigator import HFInvestigator
+        except ImportError:
+            pytest.skip("transformers/torch not installed")
+
+        tok = _FakeTokenizer(reply="not json")
+        sentinel = _SentinelFallback("investigator")
+        policy = HFInvestigator(
+            model=_FakeHFModel(),
+            tokenizer=tok,
+            fallback_policy=sentinel,
+        )
+
+        action = policy.act(_investigator_obs())
+
+        assert action.rationale == "sentinel fallback"
+        assert policy.fallback_count == 1
+        assert policy.last_error is not None

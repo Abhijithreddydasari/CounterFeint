@@ -270,7 +270,19 @@ model-agnostic.
 |--------------|------------------------------------|--------------------|------------|
 | Investigator | `Qwen/Qwen2.5-1.5B-Instruct`       | HuggingFace + QLoRA| **Yes**    |
 | Fraudster    | `llama3.1:8b`                      | Ollama (frozen)    | No         |
-| Auditor      | Heuristic (regex + light scoring)  | In-process Python  | No         |
+| Auditor      | Rule-based scorecards (`HeuristicAuditor`) — **deterministic by design**, see note below | In-process Python  | No         |
+
+**Why the Auditor is deterministic.** The Auditor's flag stream is the
+*reward source* for both other roles (Track A drives the Investigator's
+rationale-quality penalty; Track B drives the Fraudster's plausibility-
+weighted survival credit). A deterministic Auditor makes the reward
+function inspectable, reproducible across training runs, and free of LLM
+noise / cost / latency. It also mirrors how real ad-policy review teams
+operate — rule-based scorecards layered on top of model verdicts. The
+[`graders/auditor_pipeline.run_full_audit`](graders/auditor_pipeline.py)
+orchestrator already returns a typed bundle that an LLM-backed auditor
+could populate in one shot, so a future `LLMAuditor` is a clean drop-in;
+that swap is **explicitly out of scope for this hackathon submission**.
 
 Single submission notebook (per the hackathon's "*ideally as a Colab
 notebook so judges can re-run it*" guidance): every line of the

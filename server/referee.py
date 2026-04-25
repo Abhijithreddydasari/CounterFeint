@@ -72,6 +72,7 @@ try:
         RefereeState,
     )
     from .environment import InvestigatorEnvironment
+    from .evidence_ledger import build_evidence_ledger
 except ImportError:
     from data.ad_generator import (
         TASK_CONFIGS,
@@ -109,6 +110,7 @@ except ImportError:
         RefereeState,
     )
     from server.environment import InvestigatorEnvironment
+    from server.evidence_ledger import build_evidence_ledger
 
 
 logger = logging.getLogger(__name__)
@@ -862,6 +864,8 @@ class RefereeEnvironment(Environment[Action, Observation, RefereeState]):
             self._max_fraudster_actions_per_turn - self._actions_this_turn,
         ) if phase == "fraudster_turn" else 0
 
+        my_proposal_signals = self._build_my_proposal_signals()
+
         return FraudsterObservation(
             done=done,
             reward=reward,
@@ -876,7 +880,52 @@ class RefereeEnvironment(Environment[Action, Observation, RefereeState]):
             prior_verdicts=prior_verdicts,
             investigation_targets_used=investigations,
             allowed_categories=list(self._allowed_categories),
+            my_proposal_signals=my_proposal_signals,
         )
+
+    def _build_my_proposal_signals(self) -> Dict[str, Dict[str, Any]]:
+        """Per-proposal structured signals for the Fraudster's own ads.
+
+        For every Fraudster-proposed ad, expose the auto-assigned underlying
+        signals (payment_id, registrar, domain, country, account_age_days,
+        targeting_fingerprint) by reusing the same extraction logic the
+        Investigator's evidence ledger uses.  We synthesise an
+        "investigations" dict that pretends *all* targets were pulled — the
+        Fraudster authored these ads, so it is allowed to know everything
+        the env auto-assigned to them.  The Fraudster never sees signals
+        for synthetic / non-self-proposed ads, only for its own slate.
+        """
+        if self._episode is None:
+            return {}
+        proposal_ad_ids = list(self._proposal_slot_to_ad_id.values())
+        if not proposal_ad_ids:
+            return {}
+
+        full_targets = [
+            "payment_method",
+            "landing_page",
+            "targeting_overlap",
+            "advertiser_history",
+        ]
+        ledger = build_evidence_ledger(
+            episode=self._episode,
+            registry=self._registry,
+            ad_ids=proposal_ad_ids,
+            investigations={ad_id: full_targets for ad_id in proposal_ad_ids},
+        )
+
+        slot_by_ad_id = {
+            ad_id: slot for slot, ad_id in self._proposal_slot_to_ad_id.items()
+        }
+        verdicts = self._investigator.verdicts
+        for ad_id, entry in ledger.items():
+            if ad_id in slot_by_ad_id:
+                entry["slot_index"] = slot_by_ad_id[ad_id]
+            v = verdicts.get(ad_id)
+            entry["investigator_verdict"] = (
+                v.get("verdict") if v else "pending"
+            )
+        return ledger
 
     def build_investigator_observation(self) -> AdReviewObservation:
         obs = self._investigator._build_observation(  # noqa: SLF001
