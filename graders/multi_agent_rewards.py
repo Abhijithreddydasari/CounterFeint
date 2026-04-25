@@ -50,8 +50,14 @@ FRAUDSTER_BANNED_PENALTY = 1.0           # per ad Investigator rejected
 # ROUND_2_Q5_REALISM_REWARDS_TRAINING.md §3.1 for the rationale.
 FRAUDSTER_UNREALISTIC_PENALTY = 0.0
 
-INVESTIGATOR_RATIONALE_BONUS = 0.2       # per inferred-approved rationale
-INVESTIGATOR_INCONSISTENCY_PENALTY = 0.3 # per flagged inconsistency
+INVESTIGATOR_RATIONALE_BONUS = 0.2       # per clean-rationale verdict, weighted by ad plausibility
+INVESTIGATOR_INCONSISTENCY_PENALTY = 0.3 # per flagged inconsistency (capped at INVESTIGATOR_INCONSISTENCY_CAP)
+INVESTIGATOR_INCONSISTENCY_CAP = 3       # max inconsistencies that count toward the penalty
+# Track A flag types that strip the rationale bonus when fired on an ad.
+# Restricted to rationale-quality flags so the Fraudster can't drag the
+# Investigator's reward down by emitting structurally-similar ads (which
+# trip cross_ad_consistency_audit).  See ROUND_2_Q5_REALISM_REWARDS_TRAINING.md §3.2.
+INVESTIGATOR_RATIONALE_FLAG_TYPES = frozenset({"missing_citation", "incoherent_rationale"})
 
 AUDITOR_TRUE_MISCAL = 1.0
 AUDITOR_TRUE_UNREALISTIC = 1.0
@@ -269,32 +275,63 @@ def fraudster_reward(inputs: RewardInputs) -> float:
 
 def investigator_reward(inputs: RewardInputs) -> float:
     """
-    Investigator reward = R1 grader_score + Track A audit signal.
+    Investigator reward = R1 grader_score
+                        + difficulty-weighted clean-rationale bonus  (Track A ∩ Track B)
+                        − capped inconsistency penalty               (Track A)
 
-    R1 grader_score ∈ [0, 1] is the base (calibration, triage, correctness).
-    We add bonuses for coherent/citing rationales and penalties for
-    inconsistencies found by the Auditor.
+    R1 ``grade_episode`` ∈ [0, 1] is the base (calibration, triage, correctness).
+
+    The rationale bonus is weighted by **per-ad plausibility** (Track B):
+    catching a well-disguised Fraudster ad (plausibility ≈ 1.0) is worth the
+    full bonus, while catching a gibberish ad (plausibility ≈ 0.0) earns
+    nothing — encourages the Investigator to learn signals beyond surface
+    cues.  Procedural-queue ads (no plausibility entry) default to 1.0 so
+    their reward shape is unchanged from the pre-difficulty-modulation
+    formula.
+
+    The bonus is stripped per-ad when the Auditor emits a *rationale-quality*
+    flag (``missing_citation`` / ``incoherent_rationale``) — i.e. the
+    Investigator made a verdict but couldn't justify it.  Other Track A
+    flag types (``inconsistency``, ``bias``, ``miscalibration``) do **not**
+    strip the bonus; they have their own penalty terms or are absorbed into
+    the base grader.
+
+    Inconsistency flags incur a flat per-flag penalty, capped at
+    ``INVESTIGATOR_INCONSISTENCY_CAP`` so a Fraudster can't tank Investigator
+    reward by spamming clone ads (which trip pairwise consistency checks
+    O(N²) times).
     """
     base = grade_episode(inputs.record)
 
-    # "Approved rationales" == verdicts for which *no* Track A flag fired.
-    n_verdicts = sum(
-        1 for a in inputs.investigator_action_log if a.get("action_type") == "verdict"
-    )
+    cache = inputs.get_or_build_cache()
+    per_ad_plaus = cache.per_ad_plausibility
+
+    # Track A: only rationale-quality flags strip the per-ad bonus.
     flagged_ids = {
         f.target_ad_id
         for f in inputs.audit_report.track_a_flags
-        if f.target_ad_id
+        if f.target_ad_id and f.flag_type in INVESTIGATOR_RATIONALE_FLAG_TYPES
     }
-    n_approved = max(0, n_verdicts - len(flagged_ids))
+
+    # Difficulty-weighted clean-verdict bonus.  Each verdict contributes
+    # its ad's plausibility (Track B); ads not in the Fraudster proposal
+    # log default to 1.0 so the bonus matches the pre-modulation behaviour
+    # for procedural-queue ads.
+    weighted_clean_verdicts = 0.0
+    for verdict in inputs.record.verdicts:
+        if verdict.ad_id in flagged_ids:
+            continue
+        weighted_clean_verdicts += per_ad_plaus.get(verdict.ad_id, 1.0)
+
     n_inconsistencies = sum(
         1 for f in inputs.audit_report.track_a_flags if f.flag_type == "inconsistency"
     )
+    n_inconsistencies_capped = min(n_inconsistencies, INVESTIGATOR_INCONSISTENCY_CAP)
 
     reward = (
         base
-        + INVESTIGATOR_RATIONALE_BONUS * n_approved
-        - INVESTIGATOR_INCONSISTENCY_PENALTY * n_inconsistencies
+        + INVESTIGATOR_RATIONALE_BONUS * weighted_clean_verdicts
+        - INVESTIGATOR_INCONSISTENCY_PENALTY * n_inconsistencies_capped
     )
     return reward
 
@@ -369,8 +406,10 @@ __all__ = [
     "FRAUDSTER_BANNED_PENALTY",
     "FRAUDSTER_PER_AD_SEVERITY_WEIGHT",
     "FRAUDSTER_UNREALISTIC_PENALTY",
+    "INVESTIGATOR_INCONSISTENCY_CAP",
     "INVESTIGATOR_INCONSISTENCY_PENALTY",
     "INVESTIGATOR_RATIONALE_BONUS",
+    "INVESTIGATOR_RATIONALE_FLAG_TYPES",
     "RewardCache",
     "RewardInputs",
     "auditor_reward",

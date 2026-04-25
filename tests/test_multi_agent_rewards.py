@@ -33,6 +33,7 @@ from counterfeint.graders.multi_agent_rewards import (
     AUDITOR_TRUE_UNREALISTIC,
     FRAUDSTER_BANNED_PENALTY,
     FRAUDSTER_UNREALISTIC_PENALTY,
+    INVESTIGATOR_INCONSISTENCY_CAP,
     INVESTIGATOR_INCONSISTENCY_PENALTY,
     INVESTIGATOR_RATIONALE_BONUS,
     RewardCache,
@@ -620,13 +621,151 @@ class TestInvestigatorReward:
                 investigator_action_log=inv_log,
             )
         )
-        # One inconsistency flag strips one verdict out of the citation bonus
-        # and also adds the inconsistency penalty. Net effect: reward strictly
-        # drops.
+        # An inconsistency flag fires the per-flag penalty but does NOT strip
+        # the per-verdict rationale bonus (post-cleanup: only rationale-quality
+        # flags do — see INVESTIGATOR_RATIONALE_FLAG_TYPES).  This prevents
+        # the Fraudster from tanking Investigator reward by submitting
+        # structurally-similar ads (which trip cross_ad_consistency_audit
+        # without saying anything about the Investigator's reasoning).
         assert inconsistent < clean
         assert inconsistent == pytest.approx(
-            clean - INVESTIGATOR_RATIONALE_BONUS - INVESTIGATOR_INCONSISTENCY_PENALTY
+            clean - INVESTIGATOR_INCONSISTENCY_PENALTY
         )
+
+    def test_citation_flag_strips_rationale_bonus(self) -> None:
+        """`missing_citation` is a rationale-quality flag → it strips the
+        bonus for the flagged ad (no inconsistency penalty)."""
+        verdicts = [
+            vr("ad_001", "reject", "fraud", confidence=0.85),
+            vr("ad_002", "approve", "legit", confidence=0.8),
+        ]
+        record = mk_record(
+            verdicts=verdicts,
+            ads=[ad_meta(v.ad_id, v.ground_truth) for v in verdicts],
+        )
+        inv_log = self._clean_inv_log(["ad_001", "ad_002"])
+
+        clean = investigator_reward(
+            mk_inputs(record=record, investigator_action_log=inv_log)
+        )
+        with_citation_flag = investigator_reward(
+            mk_inputs(
+                record=record,
+                audit_report=mk_report(
+                    track_a=[
+                        mk_flag("A", "missing_citation", target_ad_id="ad_001"),
+                    ],
+                ),
+                investigator_action_log=inv_log,
+            )
+        )
+        assert with_citation_flag == pytest.approx(
+            clean - INVESTIGATOR_RATIONALE_BONUS
+        )
+
+    def test_difficulty_weighted_bonus_for_fraudster_proposals(self) -> None:
+        """Catching a high-plausibility Fraudster ad pays more than catching
+        a gibberish one (Track B as difficulty modulator)."""
+        verdicts = [vr("ad_001", "reject", "fraud", confidence=0.85)]
+        record = mk_record(
+            verdicts=verdicts,
+            ads=[ad_meta("ad_001", "fraud", severity=0.6)],
+        )
+        inv_log = self._clean_inv_log(["ad_001"])
+
+        # High-plausibility (clean copy) Fraudster proposal
+        plausible_proposal = [
+            mk_propose(
+                "ad_001",
+                "Save 30% on verified artisan coffee with our 30-day return guarantee.",
+            )
+        ]
+        # Low-plausibility (gibberish copy) Fraudster proposal
+        gibberish_proposal = [mk_gibberish_propose("ad_001")]
+
+        r_plausible = investigator_reward(
+            mk_inputs(
+                record=record,
+                investigator_action_log=inv_log,
+                fraudster_proposal_log=plausible_proposal,
+                fraudster_ad_ids=["ad_001"],
+            )
+        )
+        r_gibberish = investigator_reward(
+            mk_inputs(
+                record=record,
+                investigator_action_log=inv_log,
+                fraudster_proposal_log=gibberish_proposal,
+                fraudster_ad_ids=["ad_001"],
+            )
+        )
+
+        # Catching the harder ad pays strictly more than catching the
+        # gibberish one — the bonus is multiplied by per-ad plausibility.
+        assert r_plausible > r_gibberish, (
+            f"plausible bonus ({r_plausible:.3f}) must exceed "
+            f"gibberish bonus ({r_gibberish:.3f})"
+        )
+
+    def test_procedural_queue_ads_are_not_modulated(self) -> None:
+        """Ads with no Fraudster-proposal entry default to plausibility=1.0
+        so the rationale bonus matches the pre-modulation behaviour for
+        the procedural ad queue (not the Fraudster's surface)."""
+        verdicts = [
+            vr("ad_001", "reject", "fraud", confidence=0.85),
+            vr("ad_002", "approve", "legit", confidence=0.8),
+        ]
+        record = mk_record(
+            verdicts=verdicts,
+            ads=[ad_meta(v.ad_id, v.ground_truth) for v in verdicts],
+        )
+        inv_log = self._clean_inv_log(["ad_001", "ad_002"])
+
+        # No fraudster_proposal_log → per_ad_plausibility is empty → both
+        # verdicts default to plausibility=1.0 → bonus = 0.2 × 2 = 0.4.
+        reward = investigator_reward(
+            mk_inputs(record=record, investigator_action_log=inv_log)
+        )
+        base = grade_episode(record)
+        assert reward == pytest.approx(base + INVESTIGATOR_RATIONALE_BONUS * 2)
+
+    def test_inconsistency_penalty_is_capped(self) -> None:
+        """A Fraudster spamming clone ads can produce O(N²) inconsistency
+        flags pairwise.  The per-flag penalty must be capped so this can't
+        drive Investigator reward arbitrarily negative."""
+        verdicts = [vr("ad_001", "reject", "fraud", confidence=0.85)]
+        record = mk_record(
+            verdicts=verdicts,
+            ads=[ad_meta("ad_001", "fraud")],
+        )
+        inv_log = self._clean_inv_log(["ad_001"])
+
+        # 10 inconsistency flags >> the cap
+        many_flags = [
+            mk_flag("A", "inconsistency", target_ad_id=f"ad_{i:03d}")
+            for i in range(1, 11)
+        ]
+        reward_many = investigator_reward(
+            mk_inputs(
+                record=record,
+                audit_report=mk_report(track_a=many_flags),
+                investigator_action_log=inv_log,
+            )
+        )
+        # Same scenario but with exactly the cap's worth of flags
+        capped_flags = [
+            mk_flag("A", "inconsistency", target_ad_id=f"ad_{i:03d}")
+            for i in range(1, INVESTIGATOR_INCONSISTENCY_CAP + 1)
+        ]
+        reward_capped = investigator_reward(
+            mk_inputs(
+                record=record,
+                audit_report=mk_report(track_a=capped_flags),
+                investigator_action_log=inv_log,
+            )
+        )
+        # Both should equal each other — the extras above the cap are ignored.
+        assert reward_many == pytest.approx(reward_capped)
 
 
 # -----------------------------------------------------------------------------

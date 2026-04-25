@@ -89,13 +89,22 @@ logger = logging.getLogger(__name__)
 
 
 EVAL_SEEDS: Dict[str, List[int]] = {
-    "task_1": list(range(1001, 1011)),  # 1001..1010
-    "task_2": list(range(2001, 2011)),  # 2001..2010
-    "task_3": list(range(3001, 3011)),  # 3001..3010
+    "task_1": list(range(1001, 1011)),       # 1001..1010
+    "task_2": list(range(2001, 2011)),       # 2001..2010
+    "task_3": list(range(3001, 3011)),       # 3001..3010
+    "task_3_unseen": list(range(4001, 4006)),  # 4001..4005 — held-out budget regime
 }
-"""Held-out seeds — 10 per task, deliberately disjoint from the training
+"""Held-out seeds — 10 per training-tier task, plus 5 generalisation seeds
+on ``task_3_unseen``.  All seeds are deliberately disjoint from the training
 seed range (which uses seed=42 for the scripted baseline and small integers
-for self-play rollouts). Judges can reproduce any eval number with
+for self-play rollouts).  ``task_3_unseen`` shares the template universe of
+``task_3`` but ships a tighter action budget (~1.2/ad) and one extra ring,
+so a model that over-fit to ``task_3``'s budget distribution should regress
+visibly on these seeds.  Five seeds (vs ten on the training-tier tasks)
+keeps the eval-loop wallclock from doubling for what is purely a
+generalisation probe.
+
+Judges can reproduce any eval number with
 ``python -m counterfeint.eval_suite --seed 1001 --task task_1``.
 """
 

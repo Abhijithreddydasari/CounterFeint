@@ -15,21 +15,13 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from ..graders.auditor_track_a import (
-    bias_audit,
-    calibration_audit,
-    cross_ad_consistency_audit,
-    investigator_audit_score,
-    rationale_citation_audit,
-    rationale_verdict_coherence_audit,
-)
+from ..graders.auditor_pipeline import run_full_audit
 from ..graders.base_grader import (
     EpisodeRecord,
     LinkResult,
     VerdictResult,
 )
-from ..graders.plausibility_score import compute_queue_plausibility
-from ..models import AuditFlag, AuditorAction
+from ..models import AuditorAction
 from ._base import PolicyBase
 
 
@@ -82,27 +74,15 @@ class HeuristicAuditor(PolicyBase):
         fraudster_proposals = observation.get("fraudster_proposals", []) or []
         investigation_data_seen = observation.get("investigation_data_seen", {}) or {}
 
-        # Track A — audit the Investigator.
-        track_a_flags: List[AuditFlag] = []
-        if record is not None:
-            track_a_flags.extend(calibration_audit(record))
-            track_a_flags.extend(cross_ad_consistency_audit(record))
-            track_a_flags.extend(bias_audit(record))
-        track_a_flags.extend(
-            rationale_citation_audit(investigator_actions, investigation_data_seen)
-        )
-        track_a_flags.extend(
-            rationale_verdict_coherence_audit(investigator_actions)
+        audit = run_full_audit(
+            record=record,
+            investigator_action_log=investigator_actions,
+            investigation_data_seen=investigation_data_seen,
+            fraudster_proposal_log=fraudster_proposals,
         )
 
-        # Track B — audit the Fraudster.
-        per_ad_scores, track_b_flags, queue_plaus = compute_queue_plausibility(
-            fraudster_proposals
-        )
-
-        # Convert flags to Auditor actions (one flag per action).
         actions: List[AuditorAction] = []
-        for f in track_b_flags:
+        for f in audit.track_b_flags:
             actions.append(
                 AuditorAction(
                     action_type="flag_fraudster",
@@ -112,7 +92,7 @@ class HeuristicAuditor(PolicyBase):
                     note=f.note,
                 )
             )
-        for f in track_a_flags:
+        for f in audit.track_a_flags:
             actions.append(
                 AuditorAction(
                     action_type="flag_investigator",
@@ -123,19 +103,19 @@ class HeuristicAuditor(PolicyBase):
                 )
             )
 
-        # Aggregate scores.
-        inv_score = investigator_audit_score(track_a_flags)
-
         report: Dict[str, Any] = {
-            "track_a_flags": [f.model_dump() for f in track_a_flags],
-            "track_b_flags": [f.model_dump() for f in track_b_flags],
-            "investigator_audit_score": round(inv_score, 4),
-            "fraudster_plausibility_score": round(queue_plaus, 4),
-            "per_ad_plausibility": {k: round(v, 4) for k, v in per_ad_scores.items()},
+            "track_a_flags": [f.model_dump() for f in audit.track_a_flags],
+            "track_b_flags": [f.model_dump() for f in audit.track_b_flags],
+            "investigator_audit_score": round(audit.investigator_audit_score, 4),
+            "fraudster_plausibility_score": round(audit.fraudster_plausibility_score, 4),
+            "per_ad_plausibility": {
+                k: round(v, 4) for k, v in audit.per_ad_plausibility.items()
+            },
             "notes": (
-                f"HeuristicAuditor: {len(track_a_flags)} Track A flag(s), "
-                f"{len(track_b_flags)} Track B flag(s); "
-                f"inv_audit={inv_score:.2f}, fraud_plaus={queue_plaus:.2f}."
+                f"HeuristicAuditor: {len(audit.track_a_flags)} Track A flag(s), "
+                f"{len(audit.track_b_flags)} Track B flag(s); "
+                f"inv_audit={audit.investigator_audit_score:.2f}, "
+                f"fraud_plaus={audit.fraudster_plausibility_score:.2f}."
             ),
         }
 
