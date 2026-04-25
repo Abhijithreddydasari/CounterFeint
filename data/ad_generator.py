@@ -88,10 +88,12 @@ TASK_CONFIGS: Dict[str, TaskConfig] = {
             "Learn the investigation loop. Queue of 5 ads with obviously "
             "fraudulent or clearly legitimate signals. Generous budget of 25 "
             "actions (5 per ad). Novice Fraudster: only fake-giveaway and "
-            "miracle-cure templates allowed."
+            "miracle-cure templates allowed. Capped at 3 proposals so the "
+            "queue never exceeds 8 ads (~3 actions per ad even after the "
+            "Fraudster maxes out)."
         ),
         max_rounds=4,
-        max_proposals=5,
+        max_proposals=3,
         max_fraudster_actions_per_turn=3,
         max_investigator_actions_per_turn=6,
         allowed_fraud_categories=_TASK_1_ALLOWED_CATEGORIES,

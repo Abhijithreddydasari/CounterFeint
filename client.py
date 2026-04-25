@@ -93,6 +93,10 @@ class AdFraudEnv(EnvClient[AdReviewAction, AdReviewObservation, AdFraudState]):
             feedback=obs_data.get("feedback", ""),
             available_ads=obs_data.get("available_ads", []),
             queue_status=obs_data.get("queue_status", {}),
+            queue_may_grow=obs_data.get("queue_may_grow", False),
+            evidence_ledger=obs_data.get("evidence_ledger", {}),
+            queue_digest=obs_data.get("queue_digest", []),
+            decided_ads=obs_data.get("decided_ads", []),
             metadata=obs_data.get("metadata", {}),
         )
 

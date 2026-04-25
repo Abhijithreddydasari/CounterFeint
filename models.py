@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Literal, Optional
 
 from openenv.core.env_server.types import Action, Observation, State
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # =============================================================================
@@ -72,6 +72,50 @@ class AdReviewAction(Action):
         None, description="Why the agent believes these ads are connected"
     )
 
+    @model_validator(mode="after")
+    def _validate_action_fields(self) -> "AdReviewAction":
+        """Reject mismatched action/field combinations early.
+
+        Without this, a small LLM that emits e.g.
+        ``{"action_type": "investigate", "verdict": "approve"}`` passes
+        Pydantic silently (every field is Optional) but the env quietly
+        IGNORES the verdict because ``_handle_investigate`` doesn't read
+        it — the model gets no feedback and re-emits the same broken
+        action shape every step. Surfacing the mismatch as a hard error
+        funnels these cases through the policy's deterministic fallback
+        (which DOES make a clean choice) and eventually shows up in
+        ``fallback_count``, which the training rollout exposes as a
+        signal to improve.
+        """
+        if self.action_type == "investigate":
+            if self.investigation_target is None:
+                raise ValueError(
+                    "investigation_target is required when "
+                    "action_type='investigate'"
+                )
+            if self.verdict is not None:
+                raise ValueError(
+                    "verdict must be null when action_type='investigate' "
+                    "— issue a separate verdict action."
+                )
+        elif self.action_type == "verdict":
+            if self.verdict is None:
+                raise ValueError(
+                    "verdict is required when action_type='verdict'"
+                )
+            if self.investigation_target is not None:
+                raise ValueError(
+                    "investigation_target must be null when "
+                    "action_type='verdict' — issue a separate investigate "
+                    "action."
+                )
+        elif self.action_type == "link_accounts":
+            if self.linked_ad_id is None:
+                raise ValueError(
+                    "linked_ad_id is required when action_type='link_accounts'"
+                )
+        return self
+
 
 class AdReviewObservation(Observation):
     """
@@ -119,6 +163,30 @@ class AdReviewObservation(Observation):
             "SUBSET of these fields indicate fraud rings — the policy must "
             "learn which fields are discriminative (payment_id collisions "
             "matter, country collisions usually don't)."
+        ),
+    )
+    queue_digest: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "One-row-per-pending-ad summary surfaced WITHOUT requiring an "
+            "investigation. Each row carries a curated subset of fields "
+            "from the ad + advertiser_profile: a small set of "
+            "potentially-discriminative columns (payment_type, registrar, "
+            "domain) the Investigator can use as a pre-investigation "
+            "ring-detection hint, plus a handful of decoy columns "
+            "(category, country, account_age_days) that are intentionally "
+            "non-discriminative so the policy must learn which collisions "
+            "matter. Capped to ~12 ads to keep the prompt budget bounded."
+        ),
+    )
+    decided_ads: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Per-decided-ad summary: verdict + confidence + a curated mix "
+            "of discriminative (payment_id, registrar, domain, "
+            "targeting_fingerprint) and decoy (category, country, "
+            "account_age_days) signals from the evidence ledger. Gives "
+            "the Investigator memory of past decisions for link_accounts."
         ),
     )
 
@@ -225,6 +293,17 @@ class FraudsterObservation(Observation):
     feedback: str = Field(default="", description="Free-form feedback on the last action")
     phase: Literal["fraudster_turn", "investigator_turn", "audit_phase", "done"] = Field(
         default="fraudster_turn", description="Global state-machine phase"
+    )
+    task_id: str = Field(
+        default="",
+        description=(
+            "Currently-running task id (e.g. 'task_1', 'task_3_unseen'). "
+            "Surfaced so the Fraudster can scale its stealth posture per "
+            "task tier without the Referee having to mutate its system "
+            "prompt: easy tiers want louder fraud cues so the Investigator "
+            "can succeed; hard tiers want subtler fraud cues so the trained "
+            "Investigator's evaluation gain is meaningful."
+        ),
     )
 
     round_number: int = Field(default=0, ge=0, description="1-based round counter")
