@@ -3,17 +3,26 @@ Shared infrastructure for LLM-backed role policies.
 
 The :class:`LLMPolicyBase` class gives every LLM policy:
 
-  * A bounded chat-completion call (retries + hard timeout).
-  * JSON parsing + Pydantic validation of the assistant message.
+  * JSON parsing + Pydantic validation of the assistant message, with
+    optional subclass-driven schema coercion (alias keys / nested
+    investigation tokens).
   * A deterministic ``fallback_policy`` that is called on every type of
     failure — API error, timeout, JSON decode error, validation error — so
     RL training rollouts never see the policy crash mid-episode.
   * A per-episode ``fallback_count`` integer so harnesses can surface the
     LLM health of each run (:func:`counterfeint.inference.log_end_r2`
     prints it in the ``[END]`` line).
+  * A pluggable chat backend via :meth:`_call_chat`. The default
+    implementation hits an OpenAI-compatible HTTP endpoint with retries
+    + timeout; the local-transformers Investigator
+    (:class:`counterfeint.agents.hf_investigator.HFInvestigator`)
+    overrides it to call ``model.generate`` directly so the same
+    parse / validate / fallback machinery is reused unchanged.
 
 The concrete LLM policies (:class:`.llm_fraudster.LLMFraudster`,
-:class:`.llm_investigator.LLMInvestigator`) subclass this and only implement:
+:class:`.llm_investigator.LLMInvestigator`,
+:class:`.hf_investigator.HFInvestigator`) subclass this and only need to
+provide:
 
   * :attr:`system_prompt` (class attribute string).
   * :attr:`action_model` — the Pydantic ``BaseModel`` subclass to validate
@@ -22,6 +31,10 @@ The concrete LLM policies (:class:`.llm_fraudster.LLMFraudster`,
     current observation.
   * :meth:`_log_name` — role name for debug logging (``"fraudster"`` /
     ``"investigator"``).
+  * Optionally, :meth:`_coerce_payload` to normalise the parsed JSON dict
+    before Pydantic validation (used by the HF Investigator to map alias
+    keys like ``investigation_rationale`` -> ``rationale``).
+  * Optionally, :meth:`_call_chat` for backends that aren't OpenAI HTTP.
 """
 
 from __future__ import annotations
@@ -126,6 +139,11 @@ class LLMPolicyBase(PolicyBase):
         self.fallback_count: int = 0
         self.call_count: int = 0
         self.last_error: Optional[str] = None
+        # Recording hooks (consumed by RecordingHFInvestigator and the
+        # GRPO rollout collector). Optional: leaves None when no LLM call
+        # was made for this step (e.g. fallback fired before _call_chat).
+        self.last_prompt: Optional[str] = None
+        self.last_completion: Optional[str] = None
 
         # Accept a pre-built client (test hook) or lazily build one.
         self._client = client
@@ -138,15 +156,27 @@ class LLMPolicyBase(PolicyBase):
         self.fallback_count = 0
         self.call_count = 0
         self.last_error = None
+        self.last_prompt = None
+        self.last_completion = None
         if self.fallback_policy is not None:
             self.fallback_policy.reset()
 
     def act(self, observation: Dict[str, Any]) -> Any:
         """Single LLM step, with full error surface delegated to fallback."""
         self.call_count += 1
+        # Reset recording slots so a fallback step doesn't reuse stale text
+        # from the previous successful step.
+        self.last_prompt = None
+        self.last_completion = None
         try:
             user_prompt = self._build_user_prompt(observation)
-            raw = self._call_llm_with_retries(user_prompt)
+            self.last_prompt = user_prompt
+            messages = [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+            raw = self._call_chat(messages)
+            self.last_completion = raw
             data = self._parse_and_validate(raw)
             return data
         except Exception as exc:  # noqa: BLE001 — intentional: any error -> fallback
@@ -166,6 +196,15 @@ class LLMPolicyBase(PolicyBase):
     # ------------------------------------------------------------------
     def _build_user_prompt(self, observation: Dict[str, Any]) -> str:
         raise NotImplementedError
+
+    def _call_chat(self, messages: list) -> str:
+        """Default backend: OpenAI-compatible HTTP chat completion + retries.
+
+        Subclasses may override this to plug in a different backend (e.g.
+        local ``transformers`` model). The signature mirrors the OpenAI
+        chat-completions ``messages`` argument.
+        """
+        return self._call_llm_with_retries(messages)
 
     # ------------------------------------------------------------------
     # LLM plumbing
@@ -188,27 +227,24 @@ class LLMPolicyBase(PolicyBase):
         self._client = OpenAI(**kwargs)
         return self._client
 
-    def _call_llm_once(self, user_prompt: str) -> str:
+    def _call_llm_once(self, messages: list) -> str:
         """Single blocking call to the chat completions endpoint."""
         response = self.client.chat.completions.create(
             model=self.model_name,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
             timeout=self.timeout_s,
-            messages=[
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            messages=messages,
         )
         return response.choices[0].message.content or ""
 
-    def _call_llm_with_retries(self, user_prompt: str) -> str:
+    def _call_llm_with_retries(self, messages: list) -> str:
         """Call with up to ``retries`` additional attempts after the first."""
         last_exc: Optional[BaseException] = None
         attempts = max(1, self.retries + 1)
         for attempt in range(attempts):
             try:
-                return self._call_llm_once(user_prompt)
+                return self._call_llm_once(messages)
             except Exception as exc:  # noqa: BLE001 — downstream classifier handles
                 last_exc = exc
                 if not self._is_retryable(exc) or attempt == attempts - 1:
@@ -235,7 +271,7 @@ class LLMPolicyBase(PolicyBase):
         }
 
     def _parse_and_validate(self, raw: str) -> Any:
-        """Strip markdown fences, ``json.loads``, then Pydantic-validate."""
+        """Strip markdown fences, ``json.loads``, coerce, then Pydantic-validate."""
         text = _extract_json_text(raw)
         if not text:
             raise ValueError("empty LLM response")
@@ -243,11 +279,19 @@ class LLMPolicyBase(PolicyBase):
             data = json.loads(text)
         except json.JSONDecodeError as exc:
             raise ValueError(f"LLM produced invalid JSON: {exc}") from exc
+        if isinstance(data, dict):
+            data = self._coerce_payload(data)
         assert self.action_model is not None  # enforced in __init__
         try:
             return self.action_model.model_validate(data)
         except ValidationError as exc:
             raise ValueError(f"LLM JSON failed {self.action_model.__name__} schema: {exc}") from exc
+
+    # Default no-op; subclasses can map alias keys / repair common LLM
+    # mistakes before strict validation. Returning a NEW dict is fine
+    # because the caller does not reuse `data` after this point.
+    def _coerce_payload(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        return data
 
 
 __all__ = ["LLMPolicyBase", "LLMCallError"]

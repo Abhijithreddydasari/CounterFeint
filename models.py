@@ -107,6 +107,20 @@ class AdReviewObservation(Observation):
         default=False,
         description="True when running inside the Referee — Fraudster can still add ads",
     )
+    evidence_ledger: Dict[str, Dict[str, Any]] = Field(
+        default_factory=dict,
+        description=(
+            "Per-ad structured evidence accumulated across investigations. "
+            "Surface fields (category, country, account_age_days) are always "
+            "present once an ad has been touched; investigation-only fields "
+            "(payment_id, registrar, domain, targeting_fingerprint, "
+            "advertiser_id) appear only after the corresponding "
+            "`investigate` target has been pulled. Cross-ad collisions on a "
+            "SUBSET of these fields indicate fraud rings — the policy must "
+            "learn which fields are discriminative (payment_id collisions "
+            "matter, country collisions usually don't)."
+        ),
+    )
 
 
 class AdFraudState(State):
@@ -242,6 +256,20 @@ class FraudsterObservation(Observation):
     allowed_categories: List[str] = Field(
         default_factory=list,
         description="Whitelist of category strings the Fraudster may declare",
+    )
+    my_proposal_signals: Dict[str, Dict[str, Any]] = Field(
+        default_factory=dict,
+        description=(
+            "For each Fraudster-proposed ad still on the queue, the "
+            "auto-assigned underlying signals (payment_id, registrar, "
+            "domain, country, account_age_days, targeting_fingerprint). "
+            "These fields are NOT settable by `propose_ad` — the env "
+            "samples them from the fraud-mode distribution. Surfacing "
+            "them lets the Fraudster react via `modify_pending_ad` "
+            "(e.g. soften the landing page on ad_004 because Investigator "
+            "rejected ad_002 which shares its registrar) and reason about "
+            "ring-style cross-ad collisions in its own slate."
+        ),
     )
 
 

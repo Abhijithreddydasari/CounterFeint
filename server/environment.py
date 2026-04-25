@@ -30,6 +30,7 @@ try:
     from ..data.tool_registry import InvestigationToolRegistry
     from ..models import AdFraudState, AdReviewAction, AdReviewObservation
     from ..graders.base_grader import EpisodeRecord, LinkResult, VerdictResult, grade_episode
+    from .evidence_ledger import build_evidence_ledger
 except ImportError:
     from data.ad_generator import (
         TASK_CONFIGS,
@@ -40,6 +41,7 @@ except ImportError:
     from data.tool_registry import InvestigationToolRegistry
     from models import AdFraudState, AdReviewAction, AdReviewObservation
     from graders.base_grader import EpisodeRecord, LinkResult, VerdictResult, grade_episode
+    from server.evidence_ledger import build_evidence_ledger
 
 logger = logging.getLogger(__name__)
 
@@ -592,6 +594,8 @@ class InvestigatorEnvironment(
             "task_id": config.task_id,
         }
 
+        evidence_ledger = self._build_evidence_ledger()
+
         return AdReviewObservation(
             done=done,
             reward=reward,
@@ -603,6 +607,26 @@ class InvestigatorEnvironment(
             available_ads=available_ads,
             queue_status=queue_status,
             queue_may_grow=self._queue_may_grow,
+            evidence_ledger=evidence_ledger,
+        )
+
+    def _build_evidence_ledger(self) -> Dict[str, Dict[str, Any]]:
+        """Assemble a per-ad structured evidence table for the Investigator.
+
+        Delegates to :func:`build_evidence_ledger` so the Referee can reuse
+        the exact same extraction logic (with a different ``ad_ids``
+        selection) when building the Fraudster's ``my_proposal_signals``.
+        """
+        if self._episode is None:
+            return {}
+        candidate_ad_ids: set[str] = set(self._investigations.keys())
+        if self._focused_ad_id:
+            candidate_ad_ids.add(self._focused_ad_id)
+        return build_evidence_ledger(
+            episode=self._episode,
+            registry=self._registry,
+            ad_ids=candidate_ad_ids,
+            investigations=self._investigations,
         )
 
     # ------------------------------------------------------------------

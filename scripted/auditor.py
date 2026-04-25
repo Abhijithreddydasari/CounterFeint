@@ -1,14 +1,35 @@
 """
-Scripted Auditor policy backed by the real Track A / Track B graders.
+Deterministic Auditor policy backed by the rule-based Track A / Track B graders.
 
-The Auditor consumes the full audit-phase observation, runs the
-rule-based audit checks in `graders/auditor_track_a.py` and
-`graders/auditor_track_b.py`, queues up one `flag_investigator` /
-`flag_fraudster` action per flag, and finally submits an audit report
-containing the flag payloads and aggregated audit scores.
+The Auditor is intentionally **deterministic by design**. It consumes
+the full audit-phase observation, runs every rule-based audit in
+``graders/auditor_track_a.py`` (rationale citation, calibration,
+cross-ad consistency, bias, rationale↔verdict coherence) and
+``graders/auditor_track_b.py`` (intrinsic, grounding, real-world,
+signal-realism, novelty plausibility), queues one
+``flag_investigator`` / ``flag_fraudster`` action per flag, and
+submits an audit report containing the flag payloads and aggregated
+audit scores.
 
-This means the scripted Auditor is no longer a toy — it is the exact
-same decision surface the LLM Auditor will fill in during Phase 3.
+Why deterministic
+-----------------
+The Auditor's flag stream is the **reward source** for both the
+Investigator (Track A flags drive the rationale-quality penalty in
+``multi_agent_rewards.investigator_reward``) and the Fraudster (Track B
+plausibility drives the survival credit in
+``multi_agent_rewards.fraudster_reward``). Keeping it deterministic
+means the reward function is interpretable, inspectable, and free of
+LLM noise / cost / latency. It also mirrors how real ad-policy review
+teams operate: rule-based scorecards layered on top of model verdicts.
+
+Future scope
+------------
+Replacing this with an LLM-backed Auditor is a clean drop-in: the
+``run_full_audit`` orchestrator in
+:mod:`counterfeint.graders.auditor_pipeline` returns a typed
+``FullAuditResult`` that any LLM policy could synthesise in one shot.
+That swap is **out of scope for the hackathon submission** — we keep
+the deterministic path so the reward signal is reproducible.
 """
 
 from __future__ import annotations
