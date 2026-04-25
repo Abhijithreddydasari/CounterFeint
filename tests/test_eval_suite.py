@@ -64,11 +64,23 @@ def _make_episode_result(
 
 
 class TestEvalSeeds:
-    def test_three_tasks_with_ten_seeds_each(self) -> None:
-        assert set(EVAL_SEEDS.keys()) == {"task_1", "task_2", "task_3"}
-        for task_id, seeds in EVAL_SEEDS.items():
-            assert len(seeds) == 10, f"{task_id} has wrong seed count"
-            assert len(set(seeds)) == 10, f"{task_id} has duplicate seeds"
+    # Per-task seed counts: 10 each on the training-tier tasks (task_1..3)
+    # and 5 on the held-out generalisation task (task_3_unseen).  The
+    # smaller count on the unseen task keeps eval wallclock from doubling
+    # for what is purely a generalisation probe — see eval_suite.EVAL_SEEDS.
+    EXPECTED_SEED_COUNTS = {
+        "task_1": 10,
+        "task_2": 10,
+        "task_3": 10,
+        "task_3_unseen": 5,
+    }
+
+    def test_expected_tasks_with_expected_seed_counts(self) -> None:
+        assert set(EVAL_SEEDS.keys()) == set(self.EXPECTED_SEED_COUNTS)
+        for task_id, expected in self.EXPECTED_SEED_COUNTS.items():
+            seeds = EVAL_SEEDS[task_id]
+            assert len(seeds) == expected, f"{task_id} has wrong seed count"
+            assert len(set(seeds)) == expected, f"{task_id} has duplicate seeds"
 
     def test_seeds_disjoint_from_training_seed(self) -> None:
         all_seeds = {s for seeds in EVAL_SEEDS.values() for s in seeds}
@@ -76,6 +88,15 @@ class TestEvalSeeds:
         # seeds live in the 1000+ range so they never collide.
         assert 42 not in all_seeds
         assert all(s >= 1000 for s in all_seeds)
+
+    def test_seed_ranges_disjoint_across_tasks(self) -> None:
+        """Each task owns a distinct seed range so an eval failure can be
+        traced to one task without ambiguity."""
+        seen: dict = {}
+        for task_id, seeds in EVAL_SEEDS.items():
+            for s in seeds:
+                assert s not in seen, f"seed {s} reused across {seen[s]} and {task_id}"
+                seen[s] = task_id
 
 
 class TestParseEpisodeMetrics:

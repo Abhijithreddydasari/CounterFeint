@@ -148,6 +148,41 @@ TASK_CONFIGS: Dict[str, TaskConfig] = {
         max_investigator_actions_per_turn=7,
         allowed_fraud_categories=None,
     ),
+    # Held-out generalisation eval — same template universe + ring topologies
+    # as task_3, but a strictly tighter budget regime (25 ads / 30 actions =
+    # ~1.2 actions/ad vs task_3's ~1.75) and one extra ring.  No training
+    # seeds in TRAINING_SEED_TIERS — this task's seeds (4001..4005 in
+    # eval_suite.EVAL_SEEDS) are reserved for measuring whether the trained
+    # Investigator generalises beyond the budget distribution it was trained
+    # on, not just to fresh seeds within the same budget.  See
+    # ANALYSIS.md §3.1 and ROUND_2_Q5_REALISM_REWARDS_TRAINING.md §5.1.
+    "task_3_unseen": TaskConfig(
+        task_id="task_3_unseen",
+        name="Networks Under Tighter Budget (Held-out Eval)",
+        difficulty="hard",
+        queue_size=25,
+        action_budget=30,
+        n_legit=8,
+        n_fraud=12,
+        n_escalate=5,
+        include_networks=True,
+        n_fraud_rings=4,
+        allowed_difficulties=["easy", "medium", "hard"],
+        description=(
+            "Held-out generalisation eval. Same fraud + escalate templates "
+            "and ring topologies as task_3, but the budget regime is "
+            "deliberately unseen: 25 ads with only 30 actions (~1.2/ad vs "
+            "task_3's ~1.75) and 4 hidden rings instead of 3. Used by "
+            "eval_suite.run_before_after to test whether the Investigator "
+            "learned the underlying detection skill or just over-fit to the "
+            "training budget distribution. Never appears in TRAINING_SEED_TIERS."
+        ),
+        max_rounds=5,
+        max_proposals=8,
+        max_fraudster_actions_per_turn=3,
+        max_investigator_actions_per_turn=7,
+        allowed_fraud_categories=None,
+    ),
 }
 
 
