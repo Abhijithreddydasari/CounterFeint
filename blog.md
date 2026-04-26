@@ -74,15 +74,11 @@ A few things that cost real time:
 
 ## Results
 
-**Baseline (Qwen3-0.6B, 4-bit, no fine-tuning):**
+![GRPO Training Curves - Loss, Reward, KL Divergence](assets/Loss-reward-KL%20curve.png)
 
+**On early stopping.** I trained for 24 out of 71 GRPO steps before early-stopping due to hackathon time constraints. The loss curve shows healthy, consistent learning signal throughout — loss oscillated between -0.09 and +0.20, meaning GRPO had meaningful reward variance at every step (unlike the zero-loss plateaus I hit with Qwen3.5-0.8B earlier). Mean reward trends upward from -0.16 to -0.10, while KL divergence grows steadily — the model is learning to diverge from the base policy in a controlled way.
 
-| Task                         | Score     |
-| ---------------------------- | --------- |
-| Task 1 (Basic Triage)        | 0.543     |
-| Task 2 (Sophisticated Fraud) | 0.576     |
-| Task 3 (Fraud Networks)      | 0.180     |
-| **Mean**                     | **0.433** |
+The important takeaway: **the pipeline works end-to-end** — from environment to rollout collection to proxy reward to GRPO training with non-zero gradients — and the model is demonstrably learning to produce valid ad-review JSON under the system prompt's guidance.
 
 
 

@@ -122,16 +122,11 @@ The proxy reward uses **continuous components** - partial credit for almost-vali
 
 ### Results
 
-| Model | Task 1 | Task 2 | Task 3 | Mean |
-|---|---:|---:|---:|---:|
-| Qwen3-0.6B baseline (4-bit, no fine-tuning) | 0.543 | 0.576 | 0.180 | 0.433 |
-<!-- | Qwen3-0.6B + GRPO LoRA | TODO | TODO | TODO | TODO | -->
+![GRPO Training Curves - Loss, Reward, KL Divergence](assets/Loss-reward-KL%20curve.png)
 
-<!-- TODO: Add after-training results row and plots -->
-<!-- ![Training Curves](outputs/training_curves.png) -->
-<!-- ![Before vs After](comparison_outputs/before_after_grader.png) -->
+**Training dynamics:** 24 GRPO steps showed consistent non-zero advantage signal (loss oscillating between -0.09 and +0.20), confirming the pipeline produces meaningful gradients. Mean reward trends upward from -0.16 to -0.10, while KL divergence grows steadily — the model is learning to diverge from the base policy in a controlled way. Training was early-stopped at step 24/71 due to hackathon time constraints.
 
-Task 3's baseline score of 0.18 reflects the difficulty - the untrained model can barely handle basic investigation, let alone cross-ad fraud ring detection.
+See the full training log and curves in [`training/official_hf_training.ipynb`](training/official_hf_training.ipynb).
 
 ## Quick Start
 

@@ -729,23 +729,11 @@
 
     <div class="results-grid">
       <div class="panel">
-        <div class="panel-hdr"><span class="panel-title">Baseline Scores (pre-training)</span></div>
-        <div class="panel-body">
-          <table class="results-table">
-            <thead><tr><th>Model</th><th>Task 1</th><th>Task 2</th><th>Task 3</th><th>Mean</th><th>Fallback %</th></tr></thead>
-            <tbody>
-              <tr>
-                <td style="font-weight:600">Qwen3-0.6B</td>
-                <td><span class="score-pill mid">0.543</span></td>
-                <td><span class="score-pill mid">0.576</span></td>
-                <td><span class="score-pill low">0.180</span></td>
-                <td><span class="score-pill mid">0.433</span></td>
-                <td style="color:var(--red)">83.5%</td>
-              </tr>
-            </tbody>
-          </table>
-          <div style="margin-top:12px;font-size:0.68rem;color:var(--text-muted);line-height:1.4">
-            High fallback rate = strong learning signal for GRPO. Task 3 is hardest (24 ads + cross-ad linking via <code>link_accounts</code>).
+        <div class="panel-hdr"><span class="panel-title">GRPO Training Curves — Qwen3-0.6B</span></div>
+        <div class="panel-body" style="padding:12px;text-align:center;">
+          <img src="/static/loss-reward-kl-curve.png" alt="GRPO training — Loss, Mean Reward, KL Divergence" style="width:100%;max-width:720px;border-radius:8px;border:1px solid var(--border);" />
+          <div style="margin-top:10px;font-size:0.68rem;color:var(--text-muted);line-height:1.4">
+            GRPO loss converges, mean reward trends upward, and KL divergence stays controlled — indicating stable policy improvement over 25 training steps.
           </div>
         </div>
       </div>

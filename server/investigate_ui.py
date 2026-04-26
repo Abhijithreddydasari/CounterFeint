@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from openenv.core.env_server import serialize_observation
 from pydantic import BaseModel, Field
 
@@ -48,6 +49,8 @@ def register_investigate_ui(app: FastAPI) -> None:
     @app.get("/web", include_in_schema=False)
     async def web_to_investigate() -> RedirectResponse:
         return RedirectResponse(url="/investigate", status_code=302)
+
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     @app.get("/investigate", include_in_schema=False)
     async def investigate_page() -> FileResponse:
