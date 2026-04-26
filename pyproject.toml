@@ -35,6 +35,7 @@ dev = [
 server = "counterfeint.server.app:main"
 
 [tool.setuptools]
+include-package-data = true
 packages = [
     "counterfeint",
     "counterfeint.server",
@@ -54,3 +55,11 @@ packages = [
 
 [tool.setuptools.package-data]
 "counterfeint.data" = ["real_world_test_set.json"]
+"counterfeint.server" = [
+    "static/*.html",
+    "static/*.css",
+    "static/*.js",
+    "static/*.svg",
+    "static/*.png",
+    "static/*.ico",
+]

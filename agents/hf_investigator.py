@@ -87,6 +87,7 @@ class HFInvestigator(LLMPolicyBase):
         max_new_tokens: int = 384,
         temperature: float = 0.7,
         do_sample: bool = True,
+        enable_thinking: bool = False,
     ) -> None:
         if model is None or tokenizer is None:
             raise TypeError(
@@ -106,6 +107,11 @@ class HFInvestigator(LLMPolicyBase):
         self.max_new_tokens = int(max_new_tokens)
         self.temperature = float(temperature)
         self.do_sample = bool(do_sample)
+        # Qwen3 supports thinking-mode CoT via the chat template. We default
+        # to OFF — we want the model to emit the JSON action directly rather
+        # than spend tokens on chain-of-thought before the JSON.  Older
+        # models (Qwen2.5 etc.) silently ignore this flag.
+        self.enable_thinking = bool(enable_thinking)
 
     # ------------------------------------------------------------------
     # Convenience loader
@@ -162,12 +168,24 @@ class HFInvestigator(LLMPolicyBase):
     # parent's OpenAI-HTTP path).
     # ------------------------------------------------------------------
     def _call_chat(self, messages: list) -> str:
-        encoded = self.tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            return_tensors="pt",
-            return_dict=True,
-        )
+        template_kwargs: Dict[str, Any] = {
+            "add_generation_prompt": True,
+            "return_tensors": "pt",
+            "return_dict": True,
+        }
+        # Qwen3-only: pass enable_thinking through so the chat template
+        # selects the non-thinking variant. Other tokenizers will reject
+        # the unknown kwarg, in which case we silently fall back.
+        try:
+            encoded = self.tokenizer.apply_chat_template(
+                messages,
+                enable_thinking=self.enable_thinking,
+                **template_kwargs,
+            )
+        except TypeError:
+            encoded = self.tokenizer.apply_chat_template(
+                messages, **template_kwargs
+            )
         try:
             device = next(self.model.parameters()).device
         except StopIteration:
@@ -201,6 +219,13 @@ class HFInvestigator(LLMPolicyBase):
             if tgt in _ALLOWED_KEYS and tgt not in out:
                 out[tgt] = v
 
+        # Fix: model puts "reject"/"approve"/"escalate" in action_type
+        # instead of "verdict". Remap it.
+        at = out.get("action_type")
+        if at in ("reject", "approve", "escalate"):
+            out["verdict"] = at
+            out["action_type"] = "verdict"
+
         # Recover investigation_target from common look-alike fields the
         # base model invents when the schema instruction lands ambiguously.
         if "investigation_target" not in out:
@@ -214,6 +239,12 @@ class HFInvestigator(LLMPolicyBase):
                 and isinstance(sigs[0], str) and sigs[0] in _ALLOWED_TARGETS
             ):
                 out["investigation_target"] = sigs[0]
+
+        # Truncate rationale to avoid max_tokens truncation mid-string.
+        rat = out.get("rationale")
+        if isinstance(rat, str) and len(rat) > 100:
+            out["rationale"] = rat[:100].rsplit(" ", 1)[0]
+
         return out
 
 
