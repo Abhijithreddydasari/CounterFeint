@@ -20,7 +20,7 @@ CounterFeint is an [OpenEnv](https://github.com/open-env/open-env)-compatible en
 - An **Investigator** reviews a queue of ads under a limited budget, investigates suspicious signals, and renders verdicts (approve / reject / escalate)
 - An **Auditor** grades the Investigator's reasoning using deterministic scorecards
 
-The Investigator is the agent I train. It's a **Qwen3-0.6B** model with QLoRA - going up against a frozen **Llama 3.1 8B** Fraudster. That's a ~13x parameter gap. The claim I wanted to test: task-specific GRPO can close a large capability gap when the task is well-defined and the reward signal is rich.
+The Investigator is the agent I train. It's a **Qwen3-0.6B** model with QLoRA - going up against a frozen **Llama 3.1 8B** Fraudster. That's a ~13x parameter gap. The goal is to train the small model with GRPO until it catches what the big one tries to hide.
 
 ![CounterFeint on HuggingFace Spaces](assets/HF%20Spaces.png)
 

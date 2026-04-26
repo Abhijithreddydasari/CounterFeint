@@ -24,8 +24,6 @@ tags:
 **[Training Notebook](training/official_hf_training.ipynb)** ·
 **[GitHub](https://github.com/Abhijithreddydasari/CounterFeint)**
 
-![CounterFeint on HuggingFace Spaces](assets/HF%20Spaces.png)
-
 ---
 
 ## Why Ad Fraud?
@@ -50,7 +48,9 @@ CounterFeint is an [OpenEnv](https://github.com/open-env/open-env)-compatible en
 | **Investigator** | Reviews a queue of ads, investigates suspicious signals within a budget, renders verdicts | `Qwen3-0.6B` + QLoRA (**trained via GRPO**) |
 | **Auditor** | Grades the Investigator's reasoning quality and the Fraudster's plausibility | Rule-based scorecards (deterministic) |
 
-The Investigator is the agent I train - a **0.6B parameter model** learning to outperform a frozen **8B adversary** (~13x parameter gap). The hypothesis: task-specific reinforcement learning can overcome raw scale.
+The Investigator is the agent I train - a **0.6B parameter model** learning to outperform a frozen **8B adversary** (~13x parameter gap). The goal: train the small model with GRPO until it catches what the big one tries to hide.
+
+![CounterFeint on HuggingFace Spaces](assets/HF%20Spaces.png)
 
 ### Episode Flow
 
@@ -95,7 +95,7 @@ Task 3 introduces **fraud rings** - clusters of 3-5 ads controlled by the same a
 
 **Budget constraints force triage.** Every investigation costs budget. Miss a fraud ad? It auto-approves at episode end with the full false-negative penalty (-0.50). Over-investigate one ad? You run out before reviewing the rest. This is the same tradeoff real reviewers face daily.
 
-**Meta Purple Llama integration.** One of the six investigation tools is a `policy_classifier` simulating Llama Guard 3 / Purple Llama safety screening - returning safe/unsafe verdicts, triggered categories (S1-S13), and trust & safety fraud markers (urgency language, fake authority, get-rich-quick signals).
+**Meta Purple Llama integration.** One of the six investigation tools is a `policy_classifier` simulating **Llama Guard 3** / Purple Llama safety screening - returning safe/unsafe verdicts, triggered categories (S1-S13), and trust & safety fraud markers (urgency language, fake authority, get-rich-quick signals).
 
 **Meta policy taxonomy.** Every ad carries a citation grounded in Meta's published transparency policies (e.g., `FSDP-IF-03` for Fraud, Scams and Deceptive Practices). The Auditor checks whether the Investigator cites the correct policy section in its rationale.
 
