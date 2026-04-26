@@ -482,10 +482,201 @@ def collect_dataset(
     return out
 
 
-def samples_to_hf_dataset(samples: List[InvestigatorTrainingSample]) -> Any:
-    """Convert :class:`InvestigatorTrainingSample` rows to ``datasets.Dataset``."""
+# ---------------------------------------------------------------------------
+# In-process episode driver (no HTTP server / websockets needed).
+# ---------------------------------------------------------------------------
+
+
+def collect_episode_in_process(
+    *,
+    hf_investigator: Any,
+    task_id: str,
+    seed: int,
+    fraudster_factory: Optional[PolicyFactory] = None,
+    auditor_factory: Optional[PolicyFactory] = None,
+    max_steps: int = 200,
+    show_trace: bool = False,
+    max_rationale_chars: int = 80,
+) -> List[InvestigatorTrainingSample]:
+    """In-process variant of :func:`collect_episode` (no HTTP server).
+
+    Drives :class:`RefereeEnvironment` directly. Auditor steps are
+    cheap deterministic actions and don't count toward ``max_steps``
+    (otherwise the final ``submit_audit_report`` may fall outside the
+    budget and ``grader_score`` stays ``None``).
+    """
+    from counterfeint.server.referee import RefereeEnvironment
+
+    fraudster_factory = fraudster_factory or (lambda: ReactiveFraudster(seed=seed))
+    auditor_factory = auditor_factory or (lambda: HeuristicAuditor())
+
+    recorder = RecordingHFInvestigator(hf_investigator)
+    recorder.reset()
+
+    fraudster = fraudster_factory()
+    investigator: Any = recorder
+    auditor = auditor_factory()
+    if show_trace:
+        fraudster = TracingPolicy(
+            fraudster, "fraudster", enabled=True,
+            max_rationale_chars=max_rationale_chars,
+        )
+        investigator = TracingPolicy(
+            recorder, "investigator", enabled=True,
+            max_rationale_chars=max_rationale_chars,
+        )
+        auditor = TracingPolicy(
+            auditor, "auditor", enabled=True,
+            max_rationale_chars=max_rationale_chars,
+        )
+
+    env = RefereeEnvironment()
+    env.reset_match(task_id=task_id, seed=seed)
+
+    role_handlers = {
+        "fraudster_turn": (
+            fraudster, env.build_fraudster_observation,
+            env.step_as_fraudster, "fraudster",
+        ),
+        "investigator_turn": (
+            investigator, env.build_investigator_observation,
+            env.step_as_investigator, "investigator",
+        ),
+        "audit_phase": (
+            auditor, env.build_auditor_observation,
+            env.step_as_auditor, "auditor",
+        ),
+    }
+
+    role_reward_acc: Dict[str, float] = {
+        "fraudster": 0.0, "investigator": 0.0, "auditor": 0.0,
+    }
+
+    step_idx = 0
+    while env.phase in role_handlers:
+        policy, build_obs_fn, step_fn, role_name = role_handlers[env.phase]
+        if role_name != "auditor" and step_idx >= max_steps:
+            break
+
+        obs = build_obs_fn()
+        obs_dict = obs.model_dump()
+
+        for slot in ("last_prompt", "last_completion", "last_error"):
+            if hasattr(policy, slot):
+                setattr(policy, slot, None)
+
+        try:
+            action = policy.act(obs_dict)
+        except Exception:  # noqa: BLE001 — break on any policy crash
+            break
+
+        try:
+            new_obs = step_fn(action)
+        except Exception:  # noqa: BLE001 — break on env reject
+            break
+
+        if new_obs is not None:
+            new_obs_dict = new_obs.model_dump()
+            role_reward_acc[role_name] += float(
+                new_obs_dict.get("reward", 0.0) or 0.0
+            )
+
+        if role_name != "auditor":
+            step_idx += 1
+
+    state = env.state
+    episode_result = {
+        "task_id": task_id,
+        "seed": seed,
+        "end_reason": getattr(state, "end_reason", None),
+        "rewards_by_role": role_reward_acc,
+        "grader_score": getattr(state, "grader_score", None) or 0.0,
+        "stopped_phase": env.phase,
+    }
+
+    return records_to_samples(
+        recorder.step_records,
+        episode_result=episode_result,
+        task_id=task_id,
+        seed=seed,
+    )
+
+
+def collect_dataset_in_process(
+    *,
+    hf_investigator: Any,
+    seeds_by_task: Dict[str, List[int]],
+    fraudster_factory: Optional[PolicyFactory] = None,
+    auditor_factory: Optional[PolicyFactory] = None,
+    max_steps: int = 200,
+    show_trace: bool = False,
+    max_rationale_chars: int = 80,
+) -> List[InvestigatorTrainingSample]:
+    """In-process variant of :func:`collect_dataset` (no HTTP server)."""
+    out: List[InvestigatorTrainingSample] = []
+    n_eps = sum(len(v) for v in seeds_by_task.values())
+    done = 0
+    skipped = 0
+    for task_id, seeds in seeds_by_task.items():
+        for seed in seeds:
+            done += 1
+            print(f"  [{done}/{n_eps}] {task_id} seed={seed} ...", flush=True)
+            try:
+                samples = collect_episode_in_process(
+                    hf_investigator=hf_investigator,
+                    task_id=task_id,
+                    seed=seed,
+                    fraudster_factory=fraudster_factory,
+                    auditor_factory=auditor_factory,
+                    max_steps=max_steps,
+                    show_trace=show_trace,
+                    max_rationale_chars=max_rationale_chars,
+                )
+                out.extend(samples)
+                print(
+                    f"      -> {len(samples)} usable Investigator turn(s) "
+                    f"| fallback {hf_investigator.fallback_count}/"
+                    f"{hf_investigator.call_count}",
+                    flush=True,
+                )
+            except Exception as exc:  # noqa: BLE001 — log + continue
+                skipped += 1
+                print(
+                    f"      SKIPPED ({type(exc).__name__}: {exc}). "
+                    f"Continuing with next seed.",
+                    flush=True,
+                )
+    if skipped:
+        print(f"\n  Note: {skipped}/{n_eps} episode(s) skipped.", flush=True)
+    return out
+
+
+def samples_to_hf_dataset(
+    samples: List[InvestigatorTrainingSample],
+    *,
+    system_prompt: Optional[str] = None,
+) -> Any:
+    """Convert :class:`InvestigatorTrainingSample` rows to ``datasets.Dataset``.
+
+    When *system_prompt* is provided, the ``prompt`` column is replaced
+    with a chat-messages list ``[{role: system, ...}, {role: user, ...}]``
+    so TRL's ``GRPOTrainer`` can apply the tokenizer's chat template
+    before generation. Without this, the model receives raw text and
+    never sees the system instruction → it doesn't know to produce JSON
+    → every completion is truncated garbage → zero advantage → zero loss.
+    """
     from datasets import Dataset
-    return Dataset.from_list([s.to_dict() for s in samples])
+
+    rows = []
+    for s in samples:
+        d = s.to_dict()
+        if system_prompt is not None:
+            d["prompt"] = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": d["prompt"]},
+            ]
+        rows.append(d)
+    return Dataset.from_list(rows)
 
 
 __all__ = [
@@ -494,7 +685,9 @@ __all__ = [
     "TracingPolicy",
     "classify_action",
     "collect_dataset",
+    "collect_dataset_in_process",
     "collect_episode",
+    "collect_episode_in_process",
     "records_to_samples",
     "samples_to_hf_dataset",
     "summarise_action",

@@ -1,16 +1,15 @@
 """
 Unit tests for the per-completion proxy reward used by GRPO.
 
-The fixtures cover the bug that motivated this module:
-
-  * Format failure → small negative.
-  * Schema-valid completion → consistent positive baseline.
+The fixtures cover:
+  * Format failure -> small negative.
+  * Partial JSON -> partial credit (between -0.3 and -0.1).
+  * Schema-valid completion -> consistent positive baseline.
   * Class-match / decision-match bonuses scale the right way.
+  * Continuous components (confidence, conciseness, hash tiebreaker)
+    produce reward variance.
   * The reward function works on completions GRPO never saw at
-    rollout collection time (the original lookup table was hash-keyed
-    on (prompt, completion) and missed every step → constant -0.01;
-    here we score schema + coherence regardless and add gold bonuses
-    when the prompt has a recorded gold).
+    rollout collection time.
 """
 
 from __future__ import annotations
@@ -32,6 +31,9 @@ _GOLD_NONE = {
     "action_type": None, "ad_id": None, "verdict": None,
     "investigation_target": None, "linked_ad_id": None,
 }
+
+# Hash tiebreaker adds a deterministic [0, 0.02] offset per completion.
+_ABS = 0.03
 
 
 def _verdict_completion(verdict: str = "reject", ad_id: str = "ad_001") -> str:
@@ -61,26 +63,28 @@ class TestSchemaValidity:
             gold=_GOLD_NONE,
             gold_episode_score=0.0,
         )
-        assert r == pytest.approx(-0.5)
+        # Partial credit: -0.3 base (text exists but no JSON structure)
+        assert r < 0.0
 
-    def test_invalid_schema_returns_negative(self) -> None:
+    def test_invalid_schema_returns_partial_credit(self) -> None:
         r = proxy_reward_one(
             "prompt about ad_001",
             json.dumps({"action_type": "make_coffee"}),
             gold=_GOLD_NONE,
             gold_episode_score=0.0,
         )
-        assert r == pytest.approx(-0.5)
+        # Partial credit: -0.3 + 0.05 (starts {) + 0.05 (has action_type) + 0.05 (ends })
+        assert -0.2 < r < 0.0
 
     def test_valid_schema_baseline(self) -> None:
         r = proxy_reward_one(
-            "prompt about ad_999",  # ad_001 NOT in prompt → no coherence bonus
+            "prompt about ad_999",  # ad_001 NOT in prompt -> no coherence bonus
             _verdict_completion(),
             gold=_GOLD_NONE,
             gold_episode_score=0.0,
         )
-        # Just the schema bonus.
-        assert r == pytest.approx(0.6)
+        # 0.6 schema + 0.135 confidence(0.9) + 0.1 conciseness + ~hash
+        assert r == pytest.approx(0.835, abs=_ABS)
 
 
 class TestCoherenceBonus:
@@ -92,7 +96,8 @@ class TestCoherenceBonus:
             gold=_GOLD_NONE,
             gold_episode_score=0.0,
         )
-        assert r == pytest.approx(0.7)  # 0.6 schema + 0.1 ad coherence
+        # 0.6 schema + 0.15 coherence + 0.135 confidence + 0.1 concise + ~hash
+        assert r == pytest.approx(0.985, abs=_ABS)
 
     def test_referenced_linked_id_in_prompt_gets_bonus(self) -> None:
         prompt = "Pending: ad_001, ad_002, ad_003."
@@ -105,8 +110,8 @@ class TestCoherenceBonus:
         r = proxy_reward_one(
             prompt, completion, gold=_GOLD_NONE, gold_episode_score=0.0,
         )
-        # 0.6 schema + 0.1 ad coherence + 0.1 linked coherence.
-        assert r == pytest.approx(0.8)
+        # 0.6 schema + 0.15 ad + 0.15 linked + 0.1 concise + ~hash
+        assert r == pytest.approx(1.0, abs=_ABS)
 
 
 class TestGoldClassMatch:
@@ -114,16 +119,16 @@ class TestGoldClassMatch:
         gold = {
             **_GOLD_NONE,
             "action_type": "verdict",
-            "verdict": "approve",  # different from generated → no decision bonus
+            "verdict": "approve",
         }
         r = proxy_reward_one(
             "Pending: ad_001",
             _verdict_completion(verdict="reject"),
             gold=gold,
-            gold_episode_score=0.0,  # no decision bonus regardless
+            gold_episode_score=0.0,
         )
-        # 0.6 schema + 0.1 coherence + 0.2 class match.
-        assert r == pytest.approx(0.9)
+        # 0.6 schema + 0.15 coherence + 0.2 class + 0.135 conf + 0.1 concise
+        assert r == pytest.approx(1.185, abs=_ABS)
 
     def test_link_accounts_classified_with_verdicts(self) -> None:
         gold = {**_GOLD_NONE, "action_type": "link_accounts"}
@@ -140,8 +145,8 @@ class TestGoldClassMatch:
             gold=gold,
             gold_episode_score=0.0,
         )
-        # 0.6 schema + 0.1 coherence + 0.2 class match (both are "verdict" class).
-        assert r == pytest.approx(0.9)
+        # 0.6 + 0.15 + 0.2 class (both "verdict" class) + 0.075 conf + 0.1 concise
+        assert r == pytest.approx(1.125, abs=_ABS)
 
 
 class TestGoldDecisionMatch:
@@ -159,10 +164,9 @@ class TestGoldDecisionMatch:
             gold=gold,
             gold_episode_score=0.0,
         )
-        # 0.6 schema + 0.1 coherence + 0.2 class + (0.6 * 1.0) = 1.5
-        assert r_high_quality == pytest.approx(1.5)
-        # No decision bonus when quality=0.
-        assert r_low_quality == pytest.approx(0.9)
+        # high: 0.6 + 0.15 + 0.2 + 0.6 decision + 0.135 conf + 0.1 concise
+        assert r_high_quality == pytest.approx(1.785, abs=_ABS)
+        assert r_low_quality == pytest.approx(1.185, abs=_ABS)
         assert r_high_quality > r_low_quality
 
     def test_target_match_scales_with_recorded_quality(self) -> None:
@@ -177,15 +181,12 @@ class TestGoldDecisionMatch:
             gold=gold,
             gold_episode_score=0.5,
         )
-        # 0.6 schema + 0.1 coherence + 0.2 class + (0.5 * 0.5 = 0.25) target.
-        assert r == pytest.approx(1.15)
+        # 0.6 + 0.15 + 0.2 class + 0.25 target + 0.1 concise (no conf for investigate)
+        assert r == pytest.approx(1.3, abs=_ABS)
 
 
 class TestRewardFunctionIntegration:
     def test_reward_fn_handles_unseen_prompts_gracefully(self) -> None:
-        # Build a lookup that doesn't include the prompt the trainer
-        # asks about — the bug fix's whole point is that we still emit
-        # a usable signal even on prompts/completions GRPO invented.
         gold_lookup = {
             "old prompt about ad_002": {
                 "fields": {**_GOLD_NONE, "action_type": "verdict", "verdict": "reject"},
@@ -199,13 +200,10 @@ class TestRewardFunctionIntegration:
         rewards = reward_fn(prompts=prompts, completions=completions)
 
         assert len(rewards) == 1
-        # 0.6 schema + 0.1 ad coherence — no class/decision bonus
-        # because no gold for this prompt.
-        assert rewards[0] == pytest.approx(0.7)
+        # 0.6 schema + 0.15 coherence + 0.135 conf + 0.1 concise (no gold)
+        assert rewards[0] == pytest.approx(0.985, abs=_ABS)
 
     def test_build_gold_lookup_extracts_action_class_from_repr(self) -> None:
-        # Mimic InvestigatorTrainingSample shape: only the fields the
-        # gold-lookup builder reads.
         sample = SimpleNamespace(
             prompt="Pending: ad_001",
             completion=_verdict_completion(),

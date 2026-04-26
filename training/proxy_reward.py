@@ -125,40 +125,52 @@ def proxy_reward_one(
     gold: Dict[str, Optional[str]],
     gold_episode_score: float,
 ) -> float:
-    """Score a single (prompt, completion) pair on the [-0.5, 2.0] range.
+    """Score a single (prompt, completion) pair on the [-0.5, 2.5] range.
 
-    See module docstring for the rationale; this is the function GRPO
-    calls per generation.
+    GRPO needs reward *variance* within each generation group to compute
+    non-zero advantages. This function uses a mix of binary gates AND
+    continuous components so that similar-but-not-identical completions
+    get meaningfully different scores.
     """
     action = _parse_completion(completion)
+
     if action is None:
-        # Hard schema failure — small negative so GRPO learns to avoid
-        # the surface form, but capped so a long run of failures doesn't
-        # destabilise advantages.
-        return -0.5
+        raw = _extract_json_text(completion)
+        if not raw:
+            return -0.5
+
+        # Partial credit: the model tried to produce JSON but it didn't
+        # validate. Give a small continuous score based on how "close"
+        # it was - this creates gradient between "total garbage" and
+        # "almost valid JSON".
+        partial = -0.3
+        if raw.startswith("{"):
+            partial += 0.05
+        if "action_type" in raw:
+            partial += 0.05
+        if "ad_id" in raw:
+            partial += 0.05
+        if raw.rstrip().endswith("}"):
+            partial += 0.05
+        return partial
 
     reward = 0.0
 
-    # 1. Schema validity.
+    # 1. Schema validity — binary gate.
     reward += 0.6
 
     # 2. Coherence — the action references real IDs the prompt mentions.
     if action.ad_id and _coherent_with_prompt(action.ad_id, prompt):
-        reward += 0.1
+        reward += 0.15
     if action.linked_ad_id and _coherent_with_prompt(action.linked_ad_id, prompt):
-        reward += 0.1
+        reward += 0.15
 
-    # 3. Action-class matches the recorded gold class. Small bonus —
-    # we don't want to lock the model into mimicking the recorded
-    # action, just nudge it toward the right *kind* of decision.
+    # 3. Action-class matches the recorded gold class.
     gold_at = gold.get("action_type")
     if gold_at and _action_class(action.action_type) == _action_class(gold_at):
         reward += 0.2
 
-    # 4. Decision matches recorded gold, scaled by recorded episode
-    # quality. High-quality recorded episodes act as soft anchors;
-    # low-quality ones don't (and the verdict/target/link fields don't
-    # match, no penalty either way — we just don't add a bonus).
+    # 4. Decision matches recorded gold, scaled by episode quality.
     quality = max(0.0, min(1.0, gold_episode_score))
     if quality > 0.0:
         if action.action_type == "verdict" and gold.get("verdict") == action.verdict:
@@ -174,6 +186,41 @@ def proxy_reward_one(
         ):
             reward += 0.6 * quality
 
+    # ---- CONTINUOUS components (break ties among valid completions) ----
+
+    # 5. Confidence value — continuous [0, 0.15]. Rewards higher
+    # confidence on verdicts (the grader rewards decisive agents).
+    if action.action_type == "verdict" and action.confidence is not None:
+        reward += 0.15 * float(action.confidence)
+
+    # 6. Rationale evidence density — count how many tokens from the
+    # prompt's findings block appear in the rationale. More evidence
+    # citations = better rationale = higher reward. Continuous.
+    if action.rationale and action.action_type in ("verdict", "link_accounts"):
+        rat_lower = action.rationale.lower()
+        evidence_hits = 0
+        for marker in ("pmt_", "reg_", "fsdp-", "similarity", "%", ".com", ".net", ".org"):
+            if marker in rat_lower:
+                evidence_hits += 1
+        reward += min(0.2, evidence_hits * 0.04)
+
+    # 7. Conciseness bonus — shorter valid completions are better (less
+    # wasted tokens, less chance of trailing garbage). Continuous.
+    comp_len = len(completion.strip())
+    if comp_len < 150:
+        reward += 0.1
+    elif comp_len < 300:
+        reward += 0.05
+    else:
+        reward -= 0.05
+
+    # 8. Deterministic hash tiebreaker — last-resort variance injection.
+    # Maps completion text to [0, 0.02] so no two identical-scoring
+    # completions produce exactly the same reward.
+    import hashlib
+    h = int(hashlib.md5(completion.encode()).hexdigest()[:8], 16)
+    reward += 0.02 * (h / 0xFFFFFFFF)
+
     return reward
 
 
@@ -188,16 +235,40 @@ def make_proxy_reward_fn(
     dataset-build time; see :func:`build_gold_lookup`).
     """
 
-    def reward_fn(prompts: List[str], completions: List[str], **_: Any) -> List[float]:
+    def _extract_user_text(prompt: Any) -> str:
+        """Extract the raw user prompt text for gold_lookup key.
+
+        TRL passes chat-formatted prompts as lists of dicts
+        ``[{role: system, ...}, {role: user, content: ...}]``, but our
+        gold_lookup is keyed by the raw user content string.
+        """
+        if isinstance(prompt, list):
+            for msg in prompt:
+                if isinstance(msg, dict) and msg.get("role") == "user":
+                    return msg.get("content", "")
+            return str(prompt)
+        return prompt
+
+    def _to_str(val: Any) -> str:
+        if isinstance(val, str):
+            return val
+        if isinstance(val, list):
+            return " ".join(str(x) for x in val)
+        return str(val)
+
+    def reward_fn(prompts, completions, **_: Any) -> List[float]:
         out: List[float] = []
         for prompt, completion in zip(prompts, completions):
-            gold = gold_lookup.get(prompt)
+            completion = _to_str(completion)
+            prompt_key = _extract_user_text(prompt)
+            prompt_text = _to_str(prompt_key)
+            gold = gold_lookup.get(prompt_key)
             if gold is None:
                 # Prompt the trainer batched but we never recorded —
                 # only score schema validity + coherence.
                 out.append(
                     proxy_reward_one(
-                        prompt, completion,
+                        prompt_text, completion,
                         gold={"action_type": None, "ad_id": None,
                               "verdict": None, "investigation_target": None,
                               "linked_ad_id": None},
@@ -207,7 +278,7 @@ def make_proxy_reward_fn(
                 continue
             out.append(
                 proxy_reward_one(
-                    prompt, completion,
+                    prompt_text, completion,
                     gold=gold["fields"],
                     gold_episode_score=float(gold["episode_score"]),
                 )

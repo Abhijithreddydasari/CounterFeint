@@ -43,6 +43,7 @@ except ImportError:
     )
 
 from .environment import AdFraudEnvironment, get_last_grader_result
+from .arena_ui import register_arena_ui
 from .investigate_ui import register_investigate_ui
 from .multi_agent_ws import register_multi_agent_routes
 from .public_api import register_public_api
@@ -63,6 +64,7 @@ app = create_app(
 register_investigate_ui(app)
 register_multi_agent_routes(app)
 register_public_api(app)
+register_arena_ui(app)
 
 
 # ------------------------------------------------------------------

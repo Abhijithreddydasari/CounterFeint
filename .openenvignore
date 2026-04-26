@@ -1,0 +1,62 @@
+# --------------------------------------------------------------------------
+# .openenvignore — extra patterns for `openenv push --exclude .openenvignore`
+# Defaults already drop .*, __pycache__, *.pyc.
+# Below: keep the Space lean and free of secrets / local-only artifacts.
+# --------------------------------------------------------------------------
+
+# ---- Build / cache artifacts ----
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+
+# ---- Local logs (large, churn every run) ----
+*.log
+ollama.log
+server.log
+
+# ---- Local-only runtime artifacts ----
+convo_logging/
+baseline_scores.json
+baseline_scores_r2.json
+reward_audit/
+training_outputs/
+outputs/
+baseline_outputs/
+comparison_outputs/
+eval_outputs/
+
+# ---- Dependency lockfile (re-built in the Docker layer) ----
+uv.lock
+
+# ---- Tests + dev scratch ----
+tests/
+*_tmp_*.py
+_tmp_*.py
+_tmp_*.ps1
+_tmp_*.txt
+_tmp_*.md
+*.draft.md
+notes/
+
+# ---- Large / generated data ----
+data_cache/
+*.sqlite
+*.db
+
+# ---- Editor / OS cruft ----
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
