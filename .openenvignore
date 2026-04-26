@@ -38,8 +38,7 @@ eval_outputs/
 # ---- Dependency lockfile (re-built in the Docker layer) ----
 uv.lock
 
-# ---- Tests + dev scratch ----
-tests/
+# ---- Dev scratch ----
 *_tmp_*.py
 _tmp_*.py
 _tmp_*.ps1
@@ -47,6 +46,14 @@ _tmp_*.txt
 _tmp_*.md
 *.draft.md
 notes/
+
+# ---- Notebook checkpoints (auto-generated, not the notebooks themselves) ----
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
+# ---- Diagnostics (dev-only verification scripts, not part of submission) ----
+diagnostics/
+verify_fraudster.py
 
 # ---- Large / generated data ----
 data_cache/
