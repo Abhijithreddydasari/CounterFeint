@@ -19,7 +19,7 @@ tags:
 
 > A three-agent adversarial RL environment where a 0.6B Investigator learns to catch ad fraud that a frozen 8B Fraudster tries to sneak past it - trained end-to-end with GRPO on a single T4 GPU.
 
-**[Live Environment (HF Space)](https://huggingface.co/spaces/QuantumTransformer/CounterFeint)** ·
+**[Deployed Env (HF Space)](https://huggingface.co/spaces/QuantumTransformer/CounterFeint)** ·
 **[Blog Post](blog.md)** ·
 **[Training Notebook](training/official_hf_training.ipynb)** ·
 **[GitHub](https://github.com/Abhijithreddydasari/CounterFeint)**
