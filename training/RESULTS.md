@@ -1,32 +1,38 @@
-# CounterFeint - Training Results
+# CounterFeint — Training Results
 
-Live tracking of every baseline + training run. Append rows as runs finish.
+Live tracking of every baseline + training run. **Only cite numbers from this file when the Source column points to a committed artifact.**
 
 ---
 
 ## Baseline (BEFORE training)
 
-Hardware: T4 medium (HF Spaces), 4-bit quantisation, no fine-tuning.
+| Model | task_1 | task_2 | task_3 | Mean | Fallback Rate | Source |
+|-------|-------:|-------:|-------:|-----:|--------------:|--------|
+| Qwen/Qwen3-0.6B | 0.543 | 0.576 | 0.180 | 0.433 | 83.51% | HF Space 2026-04-26 (not in repo) |
 
-| Model              | task_1 | task_2 | task_3 |  Mean  | Fallback Rate | Run Date     |
-|--------------------|-------:|-------:|-------:|-------:|--------------:|--------------|
-| Qwen/Qwen3-0.6B    |  0.543 |  0.576 |  0.180 |  0.433 |        83.51% | 2026-04-26   |
+---
 
-Source: `baseline_outputs/qwen3-0.6b/baseline_results.json` on HF Space `QuantumTransformer/CounterFeint-train` (path `/data/baseline_outputs/`).
+## Interrupted / smoke runs (NOT headline results)
+
+| Run | Notes | Source |
+|-----|-------|--------|
+| official_hf_training MODE=demo | KeyboardInterrupt step 24/71; Δ grader +0.005 on 3 episodes | notebook output |
+| outputs/smoke checkpoint-3 | 3 GRPO steps, proxy reward only | `outputs/smoke/` |
+| local_smoke | Constant -0.5 reward, zero grad | `training_outputs/local_smoke/` |
 
 ---
 
 ## Trained (AFTER training)
 
-| Model + Config                | task_1 | task_2 | task_3 |  Mean  | Delta vs base | Run Date |
-|-------------------------------|-------:|-------:|-------:|-------:|--------------:|----------|
-| _pending Qwen3.5-2B demo r1_  |    -   |    -   |    -   |    -   |             - | -        |
-
-Source: `outputs/<TRAINED_TAG>/eval_summary.json` on HF Space (path `/data/outputs/`).
+| Model + Config | task_1 | task_2 | task_3 | Mean | Delta vs base | Source |
+|----------------|-------:|-------:|-------:|-----:|--------------:|--------|
+| _pending_ | — | — | — | — | — | — |
 
 ---
 
-## Notes
+## Eval protocol (for new runs)
 
-- Fallback rate = % of LLM calls that produced invalid JSON / wrong schema and fell back to ScriptedInvestigator. High fallback rate at baseline = strong learning signal for GRPO.
-- task_3 is hardest (24 ads + cross-ad linking via `link_accounts`). 0.6B baseline of 0.18 is expected — small models can't handle the link-accounts logic without training.
+- Held-out seeds: `eval_suite.EVAL_SEEDS` (35 episodes)
+- Adversary: `ReactiveFraudster` for baselines; live LLM fraudster for robustness eval
+- Decoding: guided JSON (vLLM XGrammar) — re-baseline under constraints before trained-vs-base
+- Report: mean ± bootstrap 95% CI, fraud leaks, fallback rate separately
