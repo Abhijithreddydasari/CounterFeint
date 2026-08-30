@@ -33,6 +33,10 @@ class EpisodeBundle:
     episode_record: Dict[str, Any]
     corruption_label: Optional[str] = None
     expected_flags: List[str] = field(default_factory=list)
+    expected_flag_keys: List[List[Optional[str]]] = field(default_factory=list)
+    expected_llm_flags: List[str] = field(default_factory=list)
+    side: Optional[str] = None
+    exploit: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -45,6 +49,10 @@ class EpisodeBundle:
             "episode_record": self.episode_record,
             "corruption_label": self.corruption_label,
             "expected_flags": list(self.expected_flags),
+            "expected_flag_keys": list(self.expected_flag_keys),
+            "expected_llm_flags": list(self.expected_llm_flags),
+            "side": self.side,
+            "exploit": self.exploit,
         }
 
     @classmethod
@@ -59,6 +67,10 @@ class EpisodeBundle:
             episode_record=dict(data.get("episode_record") or {}),
             corruption_label=data.get("corruption_label"),
             expected_flags=list(data.get("expected_flags") or []),
+            expected_flag_keys=list(data.get("expected_flag_keys") or []),
+            expected_llm_flags=list(data.get("expected_llm_flags") or []),
+            side=data.get("side"),
+            exploit=data.get("exploit"),
         )
 
 

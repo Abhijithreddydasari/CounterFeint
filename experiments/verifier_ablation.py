@@ -1,232 +1,243 @@
 """
-Anti-gaming ablation: measure reward under weakened verifier arms.
+Anti-gaming ablations: both roles, track removal, per-check, LLM, hybrid.
 
-Arms:
-  - full: default multi-agent rewards
-  - no_track_a: strip Track A flags before investigator reward
-  - no_track_b: force plausibility = 1.0
-  - no_plausibility_gate: fraudster gets severity without plausibility multiply
-  - outcome_only: grader_score only for investigator
+Reports reward gained by an attack versus its paired clean trajectory.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-from enum import Enum
+import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from counterfeint.graders.auditor_pipeline import run_full_audit
-from counterfeint.graders.base_grader import grade_episode
-from counterfeint.graders.multi_agent_rewards import (
-    FRAUDSTER_BANNED_PENALTY,
-    FRAUDSTER_PER_AD_SEVERITY_WEIGHT,
-    INVESTIGATOR_INCONSISTENCY_CAP,
-    INVESTIGATOR_INCONSISTENCY_PENALTY,
-    INVESTIGATOR_RATIONALE_BONUS,
-    INVESTIGATOR_RATIONALE_FLAG_TYPES,
-    RewardInputs,
-    build_reward_cache,
-)
-from counterfeint.models import AuditFlag, AuditReport
+from counterfeint.models import AuditFlag
 
-from .corruptions import apply_corruption
-from .episode_bundle import EpisodeBundle, bundle_to_episode_record, run_episode_bundle
+from .corruptions import FRAUDSTER_ATTACKS, INVESTIGATOR_ATTACKS, apply_corruption
+from .episode_bundle import EpisodeBundle, load_bundle, run_episode_bundle, save_bundle
+from .reward_arms import AblationArm, compute_role_rewards, run_audit
 
-
-class AblationArm(str, Enum):
-    FULL = "full"
-    NO_TRACK_A = "no_track_a"
-    NO_TRACK_B = "no_track_b"
-    NO_PLAUSIBILITY_GATE = "no_plausibility_gate"
-    OUTCOME_ONLY = "outcome_only"
+DETERMINISTIC_ARMS = [
+    AblationArm.FULL,
+    AblationArm.NO_TRACK_A,
+    AblationArm.NO_TRACK_B,
+    AblationArm.NO_PLAUSIBILITY_GATE,
+    AblationArm.OUTCOME_ONLY,
+    AblationArm.NO_MISCALIBRATION,
+    AblationArm.NO_MISSING_CITATION,
+    AblationArm.NO_INCOHERENT,
+    AblationArm.NO_INCONSISTENCY,
+    AblationArm.NO_BIAS,
+    AblationArm.NO_GIBBERISH,
+    AblationArm.NO_PARAMETER_MISMATCH,
+    AblationArm.NO_TEMPLATE_REPETITION,
+    AblationArm.NO_BRANDING_ANOMALY,
+]
 
 
 @dataclass
-class AblationResult:
-    arm: str
+class AblationRow:
+    task_id: str
+    seed: int
     corruption: str
+    side: str
+    arm: str
     fraudster_reward: float
     investigator_reward: float
     grader_score: float
     mean_plausibility: float
+    delta_investigator: float
+    delta_fraudster: float
+    elapsed_ms: float
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            "arm": self.arm,
-            "corruption": self.corruption,
-            "fraudster_reward": round(self.fraudster_reward, 4),
-            "investigator_reward": round(self.investigator_reward, 4),
-            "grader_score": round(self.grader_score, 4),
-            "mean_plausibility": round(self.mean_plausibility, 4),
-        }
+        return asdict(self)
 
 
-def _compute_rewards(
-    bundle: EpisodeBundle,
-    arm: AblationArm,
-) -> AblationResult:
-    record = bundle_to_episode_record(bundle)
-    audit = run_full_audit(
-        record=record,
-        investigator_action_log=bundle.investigator_actions,
-        investigation_data_seen=bundle.investigation_data_seen,
-        fraudster_proposal_log=bundle.fraudster_proposals,
-    )
-
-    track_a = list(audit.track_a_flags)
-    track_b = list(audit.track_b_flags)
-    per_ad_plaus = dict(audit.per_ad_plausibility)
-
-    if arm == AblationArm.NO_TRACK_A:
-        track_a = []
-    if arm in (AblationArm.NO_TRACK_B, AblationArm.NO_PLAUSIBILITY_GATE):
-        per_ad_plaus = {k: 1.0 for k in per_ad_plaus}
-        track_b = []
-
-    audit_report = AuditReport(
-        track_a_flags=track_a,
-        track_b_flags=track_b,
-        investigator_audit_score=audit.investigator_audit_score,
-        fraudster_plausibility_score=audit.fraudster_plausibility_score,
-        notes="ablation",
-    )
-
-    grader_score = grade_episode(record)
-
-    if arm == AblationArm.OUTCOME_ONLY:
-        return AblationResult(
-            arm=arm.value,
-            corruption=bundle.corruption_label or "clean",
-            fraudster_reward=0.0,
-            investigator_reward=grader_score,
-            grader_score=grader_score,
-            mean_plausibility=sum(per_ad_plaus.values()) / max(1, len(per_ad_plaus)),
+def _load_llm_flags(path: Optional[Path], task_id: str, seed: int, corr: str) -> List[AuditFlag]:
+    if path is None or not path.exists():
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    key = f"{task_id}:{seed}:{corr}"
+    raw = payload.get(key) or payload.get("flags", {}).get(key) or []
+    flags: List[AuditFlag] = []
+    for item in raw:
+        flags.append(
+            AuditFlag(
+                track=item.get("track", "A"),
+                target_ad_id=item.get("target_ad_id"),
+                flag_type=item.get("flag_type", "missing_citation"),
+                severity=float(item.get("severity", 0.5) or 0.5),
+                note=str(item.get("note", "llm"))[:2000],
+            )
         )
-
-    # Fraudster reward
-    severity_by_ad = {
-        m.get("ad_id", ""): float(m.get("severity", 0.5) or 0.5)
-        for m in record.ads_metadata
-    }
-    verdict_by_ad = {v.ad_id: v.verdict for v in record.verdicts}
-    fraudster_ads = set(bundle.fraudster_ad_ids)
-    unbanned = [
-        ad_id
-        for ad_id in fraudster_ads
-        if verdict_by_ad.get(ad_id) != "reject"
-    ]
-    fraud_r = 0.0
-    for ad_id in unbanned:
-        sev = severity_by_ad.get(ad_id, 0.6)
-        plaus = per_ad_plaus.get(ad_id, 0.0)
-        if arm == AblationArm.NO_PLAUSIBILITY_GATE:
-            fraud_r += FRAUDSTER_PER_AD_SEVERITY_WEIGHT * sev
-        else:
-            fraud_r += FRAUDSTER_PER_AD_SEVERITY_WEIGHT * sev * plaus
-    banned = sum(1 for ad_id in fraudster_ads if verdict_by_ad.get(ad_id) == "reject")
-    fraud_r -= FRAUDSTER_BANNED_PENALTY * banned
-
-    # Investigator reward
-    flagged_ids = {
-        f.target_ad_id
-        for f in track_a
-        if f.target_ad_id and f.flag_type in INVESTIGATOR_RATIONALE_FLAG_TYPES
-    }
-    weighted_clean = 0.0
-    for v in record.verdicts:
-        if v.ad_id in flagged_ids:
-            continue
-        weighted_clean += per_ad_plaus.get(v.ad_id, 1.0)
-    n_incons = min(
-        sum(1 for f in track_a if f.flag_type == "inconsistency"),
-        INVESTIGATOR_INCONSISTENCY_CAP,
-    )
-    inv_r = (
-        grader_score
-        + INVESTIGATOR_RATIONALE_BONUS * weighted_clean
-        - INVESTIGATOR_INCONSISTENCY_PENALTY * n_incons
-    )
-
-    mean_plaus = (
-        sum(per_ad_plaus.values()) / len(per_ad_plaus) if per_ad_plaus else 1.0
-    )
-
-    return AblationResult(
-        arm=arm.value,
-        corruption=bundle.corruption_label or "clean",
-        fraudster_reward=fraud_r,
-        investigator_reward=inv_r,
-        grader_score=grader_score,
-        mean_plausibility=mean_plaus,
-    )
+    return flags
 
 
 def run_ablation_suite(
     *,
     seeds_by_task: Dict[str, List[int]],
     output_dir: Path,
-) -> List[AblationResult]:
+    llm_flags_path: Optional[Path] = None,
+    include_llm_arms: bool = True,
+    reuse_cached: bool = True,
+    cache_dir: Optional[Path] = None,
+) -> List[AblationRow]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    results: List[AblationResult] = []
+    cache_dir = cache_dir or (output_dir / "base_trajectories")
+    rows: List[AblationRow] = []
 
-    corruption_names = [
-        "clean",
-        "gibberish_ads",
-        "grader_trigger_tokens",
-        "missing_citation",
-        "contradictory_rationale",
-    ]
+    attacks = INVESTIGATOR_ATTACKS + FRAUDSTER_ATTACKS
+    arms = list(DETERMINISTIC_ARMS)
+    has_llm = llm_flags_path is not None and llm_flags_path.exists()
+    if include_llm_arms:
+        arms.append(AblationArm.HYBRID)
+        if has_llm:
+            arms.append(AblationArm.LLM_ONLY)
 
     for task_id, seeds in seeds_by_task.items():
-        for seed in seeds[:5]:  # cap per task for speed
-            base = run_episode_bundle(task_id=task_id, seed=seed)
-            for corr_name in corruption_names:
+        for seed in seeds:
+            cache_path = cache_dir / f"{task_id}_seed{seed}.json"
+            if reuse_cached and cache_path.exists():
+                base = load_bundle(cache_path)
+            else:
+                base = run_episode_bundle(task_id=task_id, seed=seed)
+                save_bundle(base, cache_path)
+
+            clean_audit = run_audit(base)
+            t0 = time.perf_counter()
+            clean_full = compute_role_rewards(base, AblationArm.FULL, audit=clean_audit)
+            clean_ms = (time.perf_counter() - t0) * 1000.0
+
+            for corr_name in ["clean"] + attacks:
                 bundle = base if corr_name == "clean" else apply_corruption(base, corr_name)
                 if corr_name != "clean":
                     bundle.corruption_label = corr_name
-                for arm in AblationArm:
-                    results.append(_compute_rewards(bundle, arm))
+                audit = clean_audit if corr_name == "clean" else run_audit(bundle)
+                llm_flags = _load_llm_flags(llm_flags_path, task_id, seed, corr_name)
 
-    payload = [r.to_dict() for r in results]
+                for arm in arms:
+                    t1 = time.perf_counter()
+                    extra = None
+                    if arm in (AblationArm.LLM_ONLY, AblationArm.HYBRID):
+                        extra = llm_flags
+                    rw = compute_role_rewards(
+                        bundle, arm, llm_flags=extra, audit=audit
+                    )
+                    elapsed = (time.perf_counter() - t1) * 1000.0
+                    if corr_name == "clean" and arm == AblationArm.FULL:
+                        elapsed = clean_ms
+                    rows.append(
+                        AblationRow(
+                            task_id=task_id,
+                            seed=seed,
+                            corruption=corr_name,
+                            side=bundle.side or "clean",
+                            arm=arm.value,
+                            fraudster_reward=rw.fraudster_reward,
+                            investigator_reward=rw.investigator_reward,
+                            grader_score=rw.grader_score,
+                            mean_plausibility=rw.mean_plausibility,
+                            delta_investigator=rw.investigator_reward - clean_full.investigator_reward,
+                            delta_fraudster=rw.fraudster_reward - clean_full.fraudster_reward,
+                            elapsed_ms=elapsed,
+                        )
+                    )
+
+    payload = [r.to_dict() for r in rows]
     (output_dir / "ablation_results.json").write_text(
         json.dumps(payload, indent=2), encoding="utf-8"
     )
-    _write_ablation_md(results, output_dir / "ablation_summary.md")
-    return results
+    _write_ablation_md(rows, output_dir / "ablation_summary.md")
+    return rows
 
 
-def _write_ablation_md(results: List[AblationResult], path: Path) -> None:
-    by_corr_arm: Dict[str, Dict[str, List[float]]] = {}
-    for r in results:
-        key = r.corruption
-        by_corr_arm.setdefault(key, {}).setdefault(r.arm, []).append(r.fraudster_reward)
+def _mean(vals: List[float]) -> float:
+    return sum(vals) / len(vals) if vals else 0.0
+
+
+def _write_ablation_md(rows: List[AblationRow], path: Path) -> None:
+    # Mean investigator/fraudster reward by corruption × key arms
+    key_arms = [
+        "full",
+        "no_track_a",
+        "no_track_b",
+        "no_plausibility_gate",
+        "outcome_only",
+        "hybrid",
+        "llm_only",
+    ]
+    by: Dict[str, Dict[str, List[AblationRow]]] = {}
+    for r in rows:
+        by.setdefault(r.corruption, {}).setdefault(r.arm, []).append(r)
 
     lines = [
         "# Verifier Anti-Gaming Ablation",
         "",
-        "Mean fraudster reward by corruption × arm (higher on gibberish = gaming succeeds).",
+        "Delta = attacked reward − paired clean FULL reward. "
+        "Positive Investigator delta on fabricated rationales with `no_track_a` "
+        "means Track A was blocking the exploit. Positive Fraudster delta on "
+        "gibberish with `no_plausibility_gate` means Track B was blocking it.",
         "",
-        "| Corruption | full | no_track_b | no_plausibility_gate |",
-        "|------------|-----:|-----------:|---------------------:|",
+        "## Investigator reward (mean)",
+        "",
+        "| Attack | " + " | ".join(key_arms) + " |",
+        "|--------|" + "|".join(["-----:" for _ in key_arms]) + "|",
     ]
-    for corr in sorted(by_corr_arm.keys()):
-        arms = by_corr_arm[corr]
-        def _mean(k: str) -> str:
-            vals = arms.get(k, [])
-            return f"{sum(vals)/len(vals):.3f}" if vals else "—"
+    for corr in sorted(by.keys()):
+        cells = [corr]
+        for arm in key_arms:
+            vals = [x.investigator_reward for x in by[corr].get(arm, [])]
+            cells.append(f"{_mean(vals):.3f}" if vals else "—")
+        lines.append("| " + " | ".join(cells) + " |")
+
+    lines.extend(
+        [
+            "",
+            "## Fraudster reward (mean)",
+            "",
+            "| Attack | " + " | ".join(key_arms) + " |",
+            "|--------|" + "|".join(["-----:" for _ in key_arms]) + "|",
+        ]
+    )
+    for corr in sorted(by.keys()):
+        cells = [corr]
+        for arm in key_arms:
+            vals = [x.fraudster_reward for x in by[corr].get(arm, [])]
+            cells.append(f"{_mean(vals):.3f}" if vals else "—")
+        lines.append("| " + " | ".join(cells) + " |")
+
+    lines.extend(
+        [
+            "",
+            "## Attack reward gain vs clean (full vs track-removed)",
+            "",
+            "| Attack | side | Δinv full | Δinv no_A | Δfrd full | Δfrd no_B/gate |",
+            "|--------|------|----------:|----------:|----------:|---------------:|",
+        ]
+    )
+    for corr in sorted(by.keys()):
+        if corr == "clean":
+            continue
+        side = by[corr].get("full", [AblationRow("", 0, corr, "?", "", 0, 0, 0, 0, 0, 0, 0)])[0].side
+        inv_full = _mean([x.delta_investigator for x in by[corr].get("full", [])])
+        inv_na = _mean([x.delta_investigator for x in by[corr].get("no_track_a", [])])
+        frd_full = _mean([x.delta_fraudster for x in by[corr].get("full", [])])
+        frd_nb = _mean(
+            [x.delta_fraudster for x in by[corr].get("no_plausibility_gate", [])]
+        )
         lines.append(
-            f"| {corr} | {_mean('full')} | {_mean('no_track_b')} | "
-            f"{_mean('no_plausibility_gate')} |"
+            f"| {corr} | {side} | {inv_full:.3f} | {inv_na:.3f} | {frd_full:.3f} | {frd_nb:.3f} |"
         )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+# Ablation uses 10+10+10 = 30 episodes (fast enough; validation uses 100)
 DEFAULT_ABLATION_SEEDS: Dict[str, List[int]] = {
-    "task_1": [11, 13, 17, 19, 23],
-    "task_2": [11, 13, 17],
-    "task_3": [11, 13, 17],
+    "task_1": list(range(11, 21)),
+    "task_2": list(range(11, 21)),
+    "task_3": list(range(11, 21)),
 }
 
 
@@ -239,5 +250,12 @@ if __name__ == "__main__":
         type=Path,
         default=Path("experiments/outputs/ablation"),
     )
+    parser.add_argument("--llm-flags", type=Path, default=None)
+    parser.add_argument("--cache-dir", type=Path, default=None)
     args = parser.parse_args()
-    run_ablation_suite(seeds_by_task=DEFAULT_ABLATION_SEEDS, output_dir=args.output)
+    run_ablation_suite(
+        seeds_by_task=DEFAULT_ABLATION_SEEDS,
+        output_dir=args.output,
+        llm_flags_path=args.llm_flags,
+        cache_dir=args.cache_dir,
+    )
