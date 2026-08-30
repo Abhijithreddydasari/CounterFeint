@@ -19,6 +19,13 @@ from .proxy_reward import (
     make_proxy_reward_fn,
     proxy_reward_one,
 )
+from .trajectory_grpo import (
+    RewardMode,
+    TrajectoryRecord,
+    collect_trajectory_group,
+    compute_group_advantages,
+    run_trajectory_grpo_collection,
+)
 from .rollout import (
     InvestigatorTrainingSample,
     RecordingHFInvestigator,
@@ -36,6 +43,8 @@ from .rollout import (
 __all__ = [
     "InvestigatorTrainingSample",
     "RecordingHFInvestigator",
+    "RewardMode",
+    "TrajectoryRecord",
     "TracingPolicy",
     "build_gold_lookup",
     "classify_action",
@@ -43,9 +52,12 @@ __all__ = [
     "collect_dataset_in_process",
     "collect_episode",
     "collect_episode_in_process",
+    "collect_trajectory_group",
+    "compute_group_advantages",
     "make_proxy_reward_fn",
     "proxy_reward_one",
     "records_to_samples",
+    "run_trajectory_grpo_collection",
     "samples_to_hf_dataset",
     "summarise_action",
 ]

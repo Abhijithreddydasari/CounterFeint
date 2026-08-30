@@ -17,7 +17,7 @@ tags:
 
 # CounterFeint - Ad Fraud Investigation Environment
 
-> A three-agent adversarial RL environment where a 0.6B Investigator learns to catch ad fraud that a frozen 8B Fraudster tries to sneak past it - trained end-to-end with GRPO on a single T4 GPU.
+> A three-agent adversarial RL environment for budget-constrained ad-fraud investigation, with a deterministic dual-track Auditor for inspectable verification. Investigator training via GRPO is experimental; see [`docs/CLAIMS.md`](docs/CLAIMS.md) for supported results.
 
 **[Deployed Env (HF Space)](https://huggingface.co/spaces/QuantumTransformer/CounterFeint)** ·
 **[Blog Post](blog.md)** ·
@@ -44,11 +44,11 @@ CounterFeint is an [OpenEnv](https://github.com/open-env/open-env)-compatible en
 
 | Role | What it does | Model |
 |---|---|---|
-| **Fraudster** | Proposes ads designed to evade detection - from obvious scams to sophisticated, borderline-plausible creatives | `llama3.1:8b` (frozen) or scripted baseline |
-| **Investigator** | Reviews a queue of ads, investigates suspicious signals within a budget, renders verdicts | `Qwen3-0.6B` + QLoRA (**trained via GRPO**) |
-| **Auditor** | Grades the Investigator's reasoning quality and the Fraudster's plausibility | Rule-based scorecards (deterministic) |
+| **Fraudster** | Proposes ads designed to evade detection | `ReactiveFraudster` (scripted, default) or LLM (eval) |
+| **Investigator** | Reviews a queue of ads, investigates signals within a budget, renders verdicts | Qwen3-4B-Instruct + QLoRA (target) |
+| **Auditor** | Grades Investigator reasoning (Track A) and Fraudster plausibility (Track B) | Deterministic rule-based (`HeuristicAuditor`) |
 
-The Investigator is the agent I train - a **0.6B parameter model** learning to outperform a frozen **8B adversary** (~13x parameter gap). The goal: train the small model with GRPO until it catches what the big one tries to hide.
+Training targets the Investigator with trajectory-group GRPO. The default training adversary is scripted; LLM fraudsters are used for evaluation robustness. See [`training/RESULTS.md`](training/RESULTS.md).
 
 ![CounterFeint on HuggingFace Spaces](assets/HF%20Spaces.png)
 
@@ -124,9 +124,9 @@ The proxy reward uses **continuous components** - partial credit for almost-vali
 
 ![GRPO Training Curves - Loss, Reward, KL Divergence](assets/Loss-reward-KL%20curve.png)
 
-**Training dynamics:** 24 GRPO steps showed consistent non-zero advantage signal (loss oscillating between -0.09 and +0.20), confirming the pipeline produces meaningful gradients. Mean reward trends upward from -0.16 to -0.10, while KL divergence grows steadily — the model is learning to diverge from the base policy in a controlled way. Training was early-stopped at step 24/71 due to hackathon time constraints.
+**Training dynamics (demo run):** Proxy reward improved over 24 GRPO steps, but held-out environment grader delta was only ~+0.005 on 3 episodes. Full before/after eval on `EVAL_SEEDS` is pending — see [`docs/CLAIMS.md`](docs/CLAIMS.md).
 
-See the full training log and curves in [`training/official_hf_training.ipynb`](training/official_hf_training.ipynb).
+See [`training/official_hf_training.ipynb`](training/official_hf_training.ipynb) and [`experiments/`](experiments/) for the updated pipeline.
 
 ## Quick Start
 

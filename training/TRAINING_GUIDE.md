@@ -272,15 +272,13 @@ The hackathon submission asks for:
 Suggested README skeleton:
 
 ```markdown
-## Results
+## Results (example layout — replace with `experiments/outputs/eval/` artifacts)
 
 | Model              | Baseline | Trained | Delta |
 |--------------------|---------:|--------:|------:|
-| Qwen3-0.6B + LoRA  |    0.60  |   0.78  | +0.18 |
-| Qwen2.5-1.5B+LoRA  |    0.66  |   0.83  | +0.17 |
+| _pending_          |    —     |    —    |   —   |
 
-![grader_score](comparison_outputs/before_after_grader.png)
-![training](comparison_outputs/training_curves.png)
+Do **not** cite placeholder +0.18 deltas. See `docs/CLAIMS.md`.
 ```
 
 ---

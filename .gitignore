@@ -15,3 +15,5 @@ outputs/
 convo_logging/
 *.log
 Review.md
+papers/verify_agents/supplementary_code/
+papers/verify_agents/counterfeint_anonymous.zip
